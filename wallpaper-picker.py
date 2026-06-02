@@ -3,12 +3,28 @@
 
 __version__ = "1.0.0"
 
+__changelog__: dict[str, list[str]] = {
+    "1.0.0": [
+        "Setup-Assistent mit In-App-Build (linux-wallpaperengine im Distrobox-Container)",
+        "Multi-Monitor-Unterstützung mit per-Monitor Wallpaper-Zuordnung",
+        "Ausführungsmodi: Distrobox, Toolbox, Direct, Custom",
+        "Installiert-Tab (lokale Wallpapers) + Verfügbar-Tab (Steam-API)",
+        "Service-Management: Start/Stop/Restart, Autostart, Live-Log",
+        "Dark Theme (Catppuccin Mocha), async Thumbnail-Loading (gif/jpg/png/webp)",
+        "Self-Updater + linux-wallpaperengine Updater",
+        "Atomic-First: funktioniert auf Bazzite/Silverblue ohne System-Pakete",
+    ],
+}
+
+import ast
 import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 import urllib.parse
 from dataclasses import dataclass
@@ -521,37 +537,49 @@ class BuildWorker(QThread):
         self.done.emit(True, "Build erfolgreich!", binary)
 
 
+def _vtuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.strip().split("."))
+    except Exception:
+        return (0,)
+
+
 class UpdateChecker(QThread):
-    """Fetches the remote file and compares __version__ to the local one."""
-    update_available = Signal(str)   # remote version string
-    up_to_date       = Signal()
+    """Fetches remote file header, parses version + changelog."""
+    update_available = Signal(str, dict)  # remote_version, remote_changelog
+    up_to_date       = Signal(str)        # remote_version
     check_failed     = Signal(str)
 
     def __init__(self, url: str):
         super().__init__()
         self._url = url
 
-    @staticmethod
-    def _vtuple(v: str) -> tuple:
-        try:
-            return tuple(int(x) for x in v.strip().split("."))
-        except Exception:
-            return (0,)
-
     def run(self):
         try:
-            req = urllib.request.Request(self._url, headers={"User-Agent": f"wallpaper-picker/{__version__}"})
+            req = urllib.request.Request(
+                self._url, headers={"User-Agent": f"wallpaper-picker/{__version__}"}
+            )
             with urllib.request.urlopen(req, timeout=10) as r:
-                head = r.read(2048).decode("utf-8", errors="ignore")
-            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', head)
-            if not m:
-                self.check_failed.emit("Keine Versionsinformation in der Remote-Datei")
+                head = r.read(8192).decode("utf-8", errors="ignore")
+
+            vm = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', head)
+            if not vm:
+                self.check_failed.emit("Keine Versionsinformation in der Remote-Datei gefunden.")
                 return
-            remote = m.group(1)
-            if self._vtuple(remote) > self._vtuple(__version__):
-                self.update_available.emit(remote)
+            remote = vm.group(1)
+
+            changelog: dict = {}
+            cm = re.search(r'__changelog__\s*=\s*(\{.+?\})\s*\n', head, re.DOTALL)
+            if cm:
+                try:
+                    changelog = ast.literal_eval(cm.group(1))
+                except Exception:
+                    pass
+
+            if _vtuple(remote) > _vtuple(__version__):
+                self.update_available.emit(remote, changelog)
             else:
-                self.up_to_date.emit()
+                self.up_to_date.emit(remote)
         except urllib.error.URLError as e:
             self.check_failed.emit(f"Netzwerk-Fehler: {e.reason}")
         except Exception as e:
@@ -559,7 +587,7 @@ class UpdateChecker(QThread):
 
 
 class SelfUpdateWorker(QThread):
-    """Downloads the new file and atomically replaces the running script."""
+    """Downloads, verifies (syntax check), backs up, and atomically replaces the script."""
     progress = Signal(str)
     done     = Signal(bool, str)
 
@@ -568,21 +596,55 @@ class SelfUpdateWorker(QThread):
         self._url, self._target = url, target
 
     def run(self):
+        backup = self._target.with_suffix(".bak")
+        tmp    = self._target.with_suffix(".update.tmp")
         try:
-            self.progress.emit(f"Herunterladen von {self._url} …")
-            req = urllib.request.Request(self._url, headers={"User-Agent": f"wallpaper-picker/{__version__}"})
+            # 1. Download with progress
+            req = urllib.request.Request(
+                self._url, headers={"User-Agent": f"wallpaper-picker/{__version__}"}
+            )
             with urllib.request.urlopen(req, timeout=30) as r:
-                data = r.read()
-            if len(data) < 1000:
-                raise ValueError("Heruntergeladene Datei zu klein — abgebrochen.")
-            tmp = self._target.with_suffix(".update.tmp")
-            self.progress.emit("Schreibe Update …")
+                total = int(r.headers.get("Content-Length", 0))
+                data  = b""
+                while chunk := r.read(8192):
+                    data += chunk
+                    if total:
+                        kb = len(data) // 1024
+                        pct = len(data) * 100 // total
+                        self.progress.emit(f"Herunterladen… {kb} KB / {total//1024} KB ({pct}%)")
+                    else:
+                        self.progress.emit(f"Herunterladen… {len(data)//1024} KB")
+
+            # 2. Sanity checks
+            if len(data) < 5000:
+                raise ValueError(f"Datei zu klein ({len(data)} Bytes) — kein Update durchgeführt.")
+
+            # 3. Syntax check — verify it's valid Python before replacing anything
+            self.progress.emit("Syntax wird geprüft…")
+            try:
+                ast.parse(data.decode("utf-8"))
+            except SyntaxError as e:
+                raise ValueError(f"Syntax-Fehler in der heruntergeladenen Datei: {e}")
+
+            # 4. Backup current file
+            self.progress.emit("Backup erstellt…")
+            if self._target.exists():
+                shutil.copy2(self._target, backup)
+
+            # 5. Atomic replace
+            self.progress.emit("Schreibe neue Version…")
             tmp.write_bytes(data)
             tmp.chmod(0o755)
             tmp.replace(self._target)
+
             self.done.emit(True, "Update erfolgreich.")
         except Exception as e:
-            self.done.emit(False, str(e))
+            # Try to restore backup if replacement went wrong
+            if not self._target.exists() and backup.exists():
+                shutil.copy2(backup, self._target)
+                self.done.emit(False, f"{e}\n(Backup wurde wiederhergestellt.)")
+            else:
+                self.done.emit(False, str(e))
 
 
 class UpdateLWEWorker(QThread):
@@ -610,13 +672,56 @@ class UpdateLWEWorker(QThread):
 
     def run(self):
         r = self._repo_dir
+        # Show commit before update
+        self._step("Aktueller Commit", f'git -C "{r}" log -1 --format="Vorher: %h — %s"')
         if not self._step("git pull", f'git -C "{r}" pull --ff-only'):
-            self.done.emit(False, "git pull fehlgeschlagen")
+            self.done.emit(False, "git pull fehlgeschlagen — evtl. lokale Änderungen vorhanden.")
             return
+        self._step("Neuer Commit", f'git -C "{r}" log -1 --format="Nachher: %h — %s"')
         if not self._step("cmake build", f'cd "{r}" && cmake --build build -j$(nproc)'):
-            self.done.emit(False, "Build fehlgeschlagen")
+            self.done.emit(False, "Build fehlgeschlagen.")
             return
         self.done.emit(True, "linux-wallpaperengine aktualisiert.")
+
+
+# ---------------------------------------------------------------------------
+# Update banner (shown at top of main window)
+# ---------------------------------------------------------------------------
+
+class UpdateBanner(QFrame):
+    """Dismissable banner shown when a new app version is available."""
+    show_dialog = Signal()
+
+    def __init__(self, remote_version: str, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(
+            "UpdateBanner{background:#1e3a5f;border-radius:6px;margin:4px 4px 0 4px;}"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+
+        icon = QLabel("↑")
+        icon.setStyleSheet("color:#89b4fa; font-size:16px; font-weight:bold;")
+        msg = QLabel(f"Update verfügbar — Version <b>{remote_version}</b>")
+        msg.setStyleSheet("color:#cdd6f4;")
+
+        update_btn = QPushButton("Aktualisieren")
+        update_btn.setStyleSheet(
+            "background:#89b4fa;color:#1e1e2e;font-weight:bold;"
+            "border-radius:4px;padding:4px 12px;"
+        )
+        update_btn.setFixedHeight(28)
+        update_btn.clicked.connect(self.show_dialog)
+
+        dismiss_btn = QPushButton("✕")
+        dismiss_btn.setFixedSize(24, 24)
+        dismiss_btn.setStyleSheet("background:transparent;color:#585b70;font-size:12px;")
+        dismiss_btn.clicked.connect(self.hide)
+
+        layout.addWidget(icon)
+        layout.addWidget(msg, stretch=1)
+        layout.addWidget(update_btn)
+        layout.addWidget(dismiss_btn)
 
 
 # ---------------------------------------------------------------------------
@@ -624,57 +729,118 @@ class UpdateLWEWorker(QThread):
 # ---------------------------------------------------------------------------
 
 class UpdateDialog(QDialog):
-    def __init__(self, current: str, remote: str, url: str, parent=None):
+    def __init__(self, current: str, remote: str, remote_changelog: dict,
+                 url: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Update verfügbar")
-        self.setFixedWidth(500)
-        self._url    = url
-        self._target = Path(sys.argv[0])
+        self.resize(540, 400)
+        self._url      = url
+        self._target   = Path(sys.argv[0])
         self._worker: Optional[SelfUpdateWorker] = None
-        self._build_ui(current, remote)
+        self._build_ui(current, remote, remote_changelog)
 
-    def _build_ui(self, current: str, remote: str):
+    def _build_ui(self, current: str, remote: str, changelog: dict):
         layout = QVBoxLayout(self)
 
-        info = QLabel(
-            f"<b>Neue Version verfügbar</b><br><br>"
+        # Version comparison
+        header = QLabel(
+            f"<b style='font-size:14px'>Update verfügbar</b><br><br>"
             f"Installiert: &nbsp;<code>{current}</code><br>"
             f"Verfügbar: &nbsp;&nbsp;<code style='color:#89b4fa'>{remote}</code>"
         )
-        info.setWordWrap(True)
-        layout.addWidget(info)
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        # Changelog — show all versions newer than current
+        new_entries = {
+            v: items for v, items in changelog.items()
+            if _vtuple(v) > _vtuple(current)
+        }
+        if new_entries:
+            layout.addWidget(QLabel("<b>Was ist neu:</b>"))
+            cl = QTextEdit()
+            cl.setReadOnly(True)
+            cl.setFixedHeight(120)
+            lines = []
+            for v in sorted(new_entries, key=_vtuple, reverse=True):
+                lines.append(f"v{v}:")
+                lines.extend(f"  • {item}" for item in new_entries[v])
+            cl.setPlainText("\n".join(lines))
+            layout.addWidget(cl)
+
+        # Progress log
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.hide()
+        layout.addWidget(self._progress_bar)
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
         self._log.setFont(QFont("Monospace", 9))
-        self._log.setFixedHeight(90)
+        self._log.setFixedHeight(80)
         self._log.hide()
         layout.addWidget(self._log)
+
+        # Rollback (shown only if .bak exists)
+        self._rollback_btn = QPushButton("⟲  Rollback auf vorherige Version")
+        self._rollback_btn.setStyleSheet("color:#f38ba8;")
+        self._rollback_btn.clicked.connect(self._rollback)
+        backup = self._target.with_suffix(".bak")
+        self._rollback_btn.setVisible(backup.exists())
+        layout.addWidget(self._rollback_btn)
 
         self._btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        self._btns.button(QDialogButtonBox.StandardButton.Ok).setText("Jetzt aktualisieren")
+        ok_btn = self._btns.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Jetzt aktualisieren")
         self._btns.accepted.connect(self._start_update)
         self._btns.rejected.connect(self.reject)
         layout.addWidget(self._btns)
 
     def _start_update(self):
         self._btns.setEnabled(False)
+        self._rollback_btn.hide()
+        self._progress_bar.show()
         self._log.show()
         self._log.append(f"Ziel: {self._target}")
         self._worker = SelfUpdateWorker(self._url, self._target)
-        self._worker.progress.connect(self._log.append)
+        self._worker.progress.connect(self._on_progress)
         self._worker.done.connect(self._on_done)
         self._worker.start()
 
+    def _on_progress(self, msg: str):
+        self._log.append(msg)
+        # Parse percentage for progress bar
+        m = re.search(r'\((\d+)%\)', msg)
+        if m:
+            self._progress_bar.setValue(int(m.group(1)))
+
     def _on_done(self, ok: bool, msg: str):
+        self._progress_bar.setValue(100 if ok else 0)
         self._log.append(("✓ " if ok else "✗ ") + msg)
         if ok:
             self._log.append("App wird neu gestartet…")
             QTimer.singleShot(1500, self._restart)
         else:
             self._btns.setEnabled(True)
+            self._rollback_btn.setVisible(self._target.with_suffix(".bak").exists())
+
+    def _rollback(self):
+        backup = self._target.with_suffix(".bak")
+        if not backup.exists():
+            self._log.show()
+            self._log.append("Kein Backup vorhanden.")
+            return
+        self._log.show()
+        self._log.append(f"Stelle {backup} wieder her…")
+        try:
+            shutil.copy2(backup, self._target)
+            self._log.append("✓ Backup wiederhergestellt — App wird neu gestartet…")
+            QTimer.singleShot(1500, self._restart)
+        except Exception as e:
+            self._log.append(f"✗ {e}")
 
     def _restart(self):
         os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -1707,14 +1873,27 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(app_box)
 
+        # Rollback app
+        backup = Path(sys.argv[0]).with_suffix(".bak")
+        if backup.exists():
+            rollback_box = QGroupBox("Rollback")
+            rb_layout = QVBoxLayout(rollback_box)
+            rb_layout.addWidget(QLabel(f"Backup vorhanden: <code>{backup}</code>"))
+            rb_btn = QPushButton("⟲  Auf vorherige Version zurücksetzen")
+            rb_btn.setStyleSheet("color:#f38ba8;")
+            rb_btn.clicked.connect(lambda: self._do_rollback(backup))
+            rb_layout.addWidget(rb_btn)
+            layout.addWidget(rollback_box)
+
         # --- LWE-Update ---
         lwe_box = QGroupBox("linux-wallpaperengine aktualisieren")
         lwe_layout = QVBoxLayout(lwe_box)
 
         repo = str(Path.home() / "linux-wallpaperengine")
+        lwe_commit = self._get_lwe_commit(repo)
         lwe_info = QLabel(
-            f"Führt <code>git pull</code> + inkrementellen Build durch.\n"
-            f"Repo: <code>{repo}</code>"
+            f"Repo: <code>{repo}</code><br>"
+            f"Aktueller Commit: <code>{lwe_commit}</code>"
         )
         lwe_info.setWordWrap(True)
         lwe_layout.addWidget(lwe_info)
@@ -1751,14 +1930,14 @@ class SettingsDialog(QDialog):
         self._check_result.setText("Prüfe…")
         self._update_checker = UpdateChecker(url)
         self._update_checker.update_available.connect(self._on_update_found)
-        self._update_checker.up_to_date.connect(lambda: self._on_check_done(True, "Bereits aktuell ✓"))
+        self._update_checker.up_to_date.connect(lambda v: self._on_check_done(True, f"Bereits aktuell (v{v}) ✓"))
         self._update_checker.check_failed.connect(lambda e: self._on_check_done(False, e))
         self._update_checker.start()
 
-    def _on_update_found(self, remote: str):
+    def _on_update_found(self, remote: str, changelog: dict):
         self._check_btn.setEnabled(True)
         self._check_result.setText(f'<span style="color:#89b4fa">v{remote} verfügbar</span>')
-        dlg = UpdateDialog(__version__, remote, self._update_url.text().strip(), self)
+        dlg = UpdateDialog(__version__, remote, changelog, self._update_url.text().strip(), self)
         dlg.exec()
 
     def _on_check_done(self, ok: bool, msg: str):
@@ -1783,6 +1962,27 @@ class SettingsDialog(QDialog):
     def _on_lwe_done(self, ok: bool, msg: str):
         self._lwe_btn.setEnabled(True)
         self._lwe_log.append(("✓ " if ok else "✗ ") + msg)
+
+    @staticmethod
+    def _get_lwe_commit(repo: str) -> str:
+        if not Path(repo).exists():
+            return "nicht installiert"
+        try:
+            r = subprocess.run(
+                ["git", "-C", repo, "log", "-1", "--format=%h — %s (%cd)", "--date=short"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return r.stdout.strip() or "unbekannt"
+        except Exception:
+            return "unbekannt"
+
+    def _do_rollback(self, backup: Path):
+        try:
+            shutil.copy2(backup, Path(sys.argv[0]))
+            QMessageBox.information(self, "Rollback", "Backup wiederhergestellt — App wird neu gestartet.")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            QMessageBox.critical(self, "Rollback fehlgeschlagen", str(e))
 
     def _info_row(self, label: str, value: str, ok: Optional[bool] = None) -> QWidget:
         w = QWidget()
@@ -1878,7 +2078,6 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(200, self._run_wizard)
 
         # Silent update check (max once per 24h)
-        import time
         if self._cfg.update_url and (time.time() - self._cfg.last_update_check > 86400):
             self._cfg.last_update_check = time.time()
             self._cfg.save()
@@ -1894,9 +2093,13 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         wizard_btn = QPushButton("⭐  Einrichtungs-Assistent")
         wizard_btn.clicked.connect(self._run_wizard)
+        self._update_check_btn = QPushButton("↑  Updates")
+        self._update_check_btn.clicked.connect(self._manual_update_check)
+        self._update_check_btn.setToolTip("Auf Updates prüfen")
         settings_btn = QPushButton("⚙  Einstellungen")
         settings_btn.clicked.connect(self._open_settings)
         toolbar.addWidget(wizard_btn)
+        toolbar.addWidget(self._update_check_btn)
         toolbar.addWidget(settings_btn)
 
         central = QWidget()
@@ -1905,9 +2108,14 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
         self.setCentralWidget(central)
 
-        self._banner = SetupBanner(self._cfg)
-        self._banner.run_wizard.connect(self._run_wizard)
-        outer.addWidget(self._banner)
+        self._setup_banner = SetupBanner(self._cfg)
+        self._setup_banner.run_wizard.connect(self._run_wizard)
+        outer.addWidget(self._setup_banner)
+
+        self._update_banner = UpdateBanner("")
+        self._update_banner.hide()
+        self._update_banner.show_dialog.connect(self._show_update_dialog)
+        outer.addWidget(self._update_banner)
 
         content = QWidget()
         root = QHBoxLayout(content)
@@ -2053,17 +2261,48 @@ class MainWindow(QMainWindow):
             return
         self._update_checker = UpdateChecker(self._cfg.update_url)
         self._update_checker.update_available.connect(self._on_update_available)
+        self._update_checker.check_failed.connect(lambda _: None)  # silent on fail
         self._update_checker.start()
 
-    def _on_update_available(self, remote: str):
-        self._status.showMessage(
-            f"Update verfügbar: v{remote}  —  Einstellungen → Updates", 0
+    def _manual_update_check(self):
+        if not self._cfg.update_url:
+            self._status.showMessage("Keine Update-URL konfiguriert — Einstellungen → Updates", 4000)
+            return
+        self._update_check_btn.setEnabled(False)
+        self._update_check_btn.setText("↑  Prüfe…")
+        checker = UpdateChecker(self._cfg.update_url)
+        checker.update_available.connect(self._on_update_available)
+        checker.up_to_date.connect(lambda v: self._on_check_done(f"Bereits aktuell (v{v})"))
+        checker.check_failed.connect(lambda e: self._on_check_done(f"Fehler: {e}"))
+        checker.start()
+        self._workers.append(checker)
+
+    def _on_check_done(self, msg: str):
+        self._update_check_btn.setEnabled(True)
+        self._update_check_btn.setText("↑  Updates")
+        self._status.showMessage(msg, 5000)
+
+    def _on_update_available(self, remote: str, changelog: dict):
+        self._pending_update = (remote, changelog)
+        self._update_check_btn.setEnabled(True)
+        self._update_check_btn.setText("↑  Updates")
+        self._update_check_btn.setStyleSheet(
+            "background:#1e3a5f;border:1px solid #89b4fa;border-radius:5px;padding:4px 10px;"
         )
-        # Highlight settings button
-        for btn in self.findChildren(QPushButton):
-            if "Einstellungen" in (btn.text() or ""):
-                btn.setStyleSheet("background:#1e3a5f; border:1px solid #89b4fa; border-radius:5px; padding:4px 10px;")
-                break
+        # Show UpdateBanner
+        self._update_banner.deleteLater()
+        self._update_banner = UpdateBanner(remote, self)
+        self._update_banner.show_dialog.connect(self._show_update_dialog)
+        # Insert after setup_banner
+        outer = self.centralWidget().layout()
+        outer.insertWidget(1, self._update_banner)
+
+    def _show_update_dialog(self):
+        if not hasattr(self, "_pending_update"):
+            return
+        remote, changelog = self._pending_update
+        dlg = UpdateDialog(__version__, remote, changelog, self._cfg.update_url, self)
+        dlg.exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self._cfg, self)
@@ -2072,7 +2311,7 @@ class MainWindow(QMainWindow):
 
     def _on_setup_complete(self):
         self._fps_spin.setValue(self._cfg.fps)
-        self._banner.update_cfg(self._cfg)
+        self._setup_banner.update_cfg(self._cfg)
         self._status.showMessage("Konfiguration gespeichert.")
 
     def closeEvent(self, event):
