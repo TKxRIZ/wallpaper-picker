@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """linux-wallpaperengine GUI — AIO für Linux (Atomic-First)"""
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __changelog__: dict[str, list[str]] = {
+    "1.0.1": [
+        "Fix: git-Befehle laufen auf dem Host statt im Container (git nicht in distrobox)",
+        "Fix: Changelog-Regex unterstützt jetzt Type-Annotationen",
+        "Verbesserter Updater: Fortschrittsbalken, Syntax-Check, Backup/Rollback",
+    ],
     "1.0.0": [
         "Setup-Assistent mit In-App-Build (linux-wallpaperengine im Distrobox-Container)",
         "Multi-Monitor-Unterstützung mit per-Monitor Wallpaper-Zuordnung",
@@ -567,7 +572,9 @@ class UpdateChecker(QThread):
             remote = vm.group(1)
 
             changelog: dict = {}
-            cm = re.search(r'__changelog__\s*=\s*(\{.+?\})\s*\n', head, re.DOTALL)
+            # [^=]* skips optional type annotation `: dict[str, list[str]]`
+            # \n\} anchors to closing brace at line start
+            cm = re.search(r'__changelog__[^=]+=\s*(\{.+?\n\})', head, re.DOTALL)
             if cm:
                 try:
                     changelog = ast.literal_eval(cm.group(1))
