@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """linux-wallpaperengine GUI — AIO für Linux (Atomic-First)"""
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 __changelog__: dict[str, list[str]] = {
+    "1.0.2": [
+        "LWE-Versionserkennung: Commit-Hash, Datum, Update-Check via GitHub API",
+        "Kompatibilitätsprüfung: --help-Parsing, Required-Flags-Check",
+        "LWE-Status-Widget im Updates-Tab mit Ampel-Anzeige",
+    ],
     "1.0.1": [
         "Fix: git-Befehle laufen auf dem Host statt im Container (git nicht in distrobox)",
         "Fix: Changelog-Regex unterstützt jetzt Type-Annotationen",
@@ -181,6 +186,25 @@ class Config:
         return [binary, "--help"]
 
 
+def lwe_quick_compat_check(cfg: "Config") -> list[str]:
+    """Fast synchronous check — only verifies binary exists + min date. No network."""
+    issues = []
+    repo = str(Path.home() / "linux-wallpaperengine")
+    if not Path(repo).exists():
+        return []  # repo not cloned yet — handled by setup wizard
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo, "log", "-1", "--format=%cd", "--date=short"],
+            capture_output=True, text=True, timeout=3,
+        )
+        date = r.stdout.strip()
+        if date and date < LWE_MIN_COMMIT_DATE:
+            issues.append(f"linux-wallpaperengine zu alt ({date}). Bitte aktualisieren.")
+    except Exception:
+        pass
+    return issues
+
+
 def validate_setup(cfg: Config) -> list[str]:
     issues = []
     if not cfg.binary:
@@ -221,6 +245,32 @@ def _container_exists(mode: str, name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
+
+# Flags the GUI requires linux-wallpaperengine to support
+LWE_REQUIRED_FLAGS = ["--screen-root", "--bg", "--fps", "--assets-dir"]
+# Oldest acceptable commit date (ISO); commits before this lack required features
+LWE_MIN_COMMIT_DATE = "2024-01-01"
+LWE_GITHUB_API = "https://api.github.com/repos/Almamu/linux-wallpaperengine/commits/main"
+
+
+@dataclass
+class LWEStatus:
+    local_commit:    str  = ""      # short hash
+    local_date:      str  = ""      # YYYY-MM-DD
+    remote_commit:   str  = ""
+    remote_date:     str  = ""
+    up_to_date:      bool = True
+    supported_flags: list = None    # type: ignore
+    compatible:      bool = True
+    missing_flags:   list = None    # type: ignore
+    error:           str  = ""
+
+    def __post_init__(self):
+        if self.supported_flags is None:
+            self.supported_flags = []
+        if self.missing_flags is None:
+            self.missing_flags = []
+
 
 @dataclass
 class Wallpaper:
@@ -708,6 +758,80 @@ class UpdateLWEWorker(QThread):
         self.done.emit(True, "linux-wallpaperengine aktualisiert.")
 
 
+class LWEVersionChecker(QThread):
+    """Checks local LWE version, remote version, and flag compatibility."""
+    finished = Signal(object)  # LWEStatus
+
+    def __init__(self, cfg: "Config"):
+        super().__init__()
+        self._cfg = cfg
+
+    def run(self):
+        status = LWEStatus()
+        repo = str(Path.home() / "linux-wallpaperengine")
+
+        # --- Local commit (host git) ---
+        try:
+            r = subprocess.run(
+                ["git", "-C", repo, "log", "-1", "--format=%h\t%H\t%cd", "--date=short"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                short, full, date = r.stdout.strip().split("\t")
+                status.local_commit = short
+                status.local_date   = date
+        except Exception as e:
+            status.error = f"git log: {e}"
+
+        # --- Remote commit (GitHub API) ---
+        try:
+            req = urllib.request.Request(
+                LWE_GITHUB_API,
+                headers={"User-Agent": f"wallpaper-picker/{__version__}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            status.remote_commit = data["sha"][:7]
+            status.remote_date   = data["commit"]["committer"]["date"][:10]
+            status.up_to_date    = data["sha"].startswith(status.local_commit) if status.local_commit else False
+        except Exception as e:
+            status.remote_commit = "?"
+            status.remote_date   = "?"
+            if not status.error:
+                status.error = f"GitHub API: {e}"
+
+        # --- Compatibility: parse --help for required flags ---
+        if self._cfg.binary and Path(self._cfg.binary).exists():
+            try:
+                if self._cfg.mode == "distrobox":
+                    cmd = ["distrobox", "enter", self._cfg.container, "--",
+                           self._cfg.binary, "--help"]
+                elif self._cfg.mode == "toolbox":
+                    cmd = ["toolbox", "run", "--container", self._cfg.container,
+                           self._cfg.binary, "--help"]
+                else:
+                    cmd = [self._cfg.binary, "--help"]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                help_text = r.stdout + r.stderr
+                status.supported_flags = re.findall(r'(--[\w-]+)', help_text)
+                status.missing_flags   = [f for f in LWE_REQUIRED_FLAGS
+                                           if f not in status.supported_flags]
+                # Check minimum commit date
+                if status.local_date and status.local_date < LWE_MIN_COMMIT_DATE:
+                    status.missing_flags.append(
+                        f"Zu alter Commit ({status.local_date} < {LWE_MIN_COMMIT_DATE})"
+                    )
+                status.compatible = len(status.missing_flags) == 0
+            except Exception as e:
+                status.compatible    = False
+                status.missing_flags = [f"--help fehlgeschlagen: {e}"]
+        else:
+            status.compatible    = False
+            status.missing_flags = ["Binary nicht gefunden"]
+
+        self.finished.emit(status)
+
+
 # ---------------------------------------------------------------------------
 # Update banner (shown at top of main window)
 # ---------------------------------------------------------------------------
@@ -1084,7 +1208,7 @@ class SetupBanner(QFrame):
                 if item.widget():
                     item.widget().deleteLater()
 
-        issues = validate_setup(cfg)
+        issues = validate_setup(cfg) + lwe_quick_compat_check(cfg)
         if not issues:
             self.setVisible(False)
             return
@@ -1909,25 +2033,39 @@ class SettingsDialog(QDialog):
             rb_layout.addWidget(rb_btn)
             layout.addWidget(rollback_box)
 
-        # --- LWE-Update ---
-        lwe_box = QGroupBox("linux-wallpaperengine aktualisieren")
+        # --- LWE-Version + Update ---
+        lwe_box = QGroupBox("linux-wallpaperengine")
         lwe_layout = QVBoxLayout(lwe_box)
 
-        repo = str(Path.home() / "linux-wallpaperengine")
-        lwe_commit = self._get_lwe_commit(repo)
-        lwe_info = QLabel(
-            f"Repo: <code>{repo}</code><br>"
-            f"Aktueller Commit: <code>{lwe_commit}</code>"
-        )
-        lwe_info.setWordWrap(True)
-        lwe_layout.addWidget(lwe_info)
+        # Status grid
+        grid = QGridLayout()
+        grid.setColumnStretch(1, 1)
 
-        lwe_btn_row = QHBoxLayout()
-        self._lwe_btn = QPushButton("linux-wallpaperengine aktualisieren")
+        self._lwe_local_lbl  = QLabel("…")
+        self._lwe_remote_lbl = QLabel("…")
+        self._lwe_compat_lbl = QLabel("…")
+        self._lwe_upd_lbl    = QLabel("…")
+
+        grid.addWidget(QLabel("Installiert:"),  0, 0)
+        grid.addWidget(self._lwe_local_lbl,     0, 1)
+        grid.addWidget(QLabel("Verfügbar:"),    1, 0)
+        grid.addWidget(self._lwe_remote_lbl,    1, 1)
+        grid.addWidget(QLabel("Update:"),       2, 0)
+        grid.addWidget(self._lwe_upd_lbl,       2, 1)
+        grid.addWidget(QLabel("Kompatibel:"),   3, 0)
+        grid.addWidget(self._lwe_compat_lbl,    3, 1)
+        lwe_layout.addLayout(grid)
+
+        btn_row = QHBoxLayout()
+        self._lwe_check_btn = QPushButton("Status prüfen")
+        self._lwe_check_btn.clicked.connect(self._check_lwe_status)
+        self._lwe_btn = QPushButton("Aktualisieren")
         self._lwe_btn.clicked.connect(self._update_lwe)
-        lwe_btn_row.addWidget(self._lwe_btn)
-        lwe_btn_row.addStretch()
-        lwe_layout.addLayout(lwe_btn_row)
+        self._lwe_btn.setEnabled(False)
+        btn_row.addWidget(self._lwe_check_btn)
+        btn_row.addWidget(self._lwe_btn)
+        btn_row.addStretch()
+        lwe_layout.addLayout(btn_row)
 
         self._lwe_log = QTextEdit()
         self._lwe_log.setReadOnly(True)
@@ -1937,6 +2075,7 @@ class SettingsDialog(QDialog):
         lwe_layout.addWidget(self._lwe_log)
 
         layout.addWidget(lwe_box)
+        self._lwe_checker: Optional[LWEVersionChecker] = None
 
         layout.addWidget(QLabel(
             "<small>Update-URL: Raw-URL zur wallpaper-picker.py auf GitHub.<br>"
@@ -1986,19 +2125,55 @@ class SettingsDialog(QDialog):
     def _on_lwe_done(self, ok: bool, msg: str):
         self._lwe_btn.setEnabled(True)
         self._lwe_log.append(("✓ " if ok else "✗ ") + msg)
+        if ok:
+            self._check_lwe_status()  # refresh status after update
 
-    @staticmethod
-    def _get_lwe_commit(repo: str) -> str:
-        if not Path(repo).exists():
-            return "nicht installiert"
-        try:
-            r = subprocess.run(
-                ["git", "-C", repo, "log", "-1", "--format=%h — %s (%cd)", "--date=short"],
-                capture_output=True, text=True, timeout=5,
+    def _check_lwe_status(self):
+        self._lwe_check_btn.setEnabled(False)
+        self._lwe_local_lbl.setText("Wird geprüft…")
+        self._lwe_remote_lbl.setText("…")
+        self._lwe_compat_lbl.setText("…")
+        self._lwe_upd_lbl.setText("…")
+        self._lwe_checker = LWEVersionChecker(self.cfg)
+        self._lwe_checker.finished.connect(self._on_lwe_status)
+        self._lwe_checker.start()
+
+    def _on_lwe_status(self, status: LWEStatus):
+        self._lwe_check_btn.setEnabled(True)
+
+        # Local
+        if status.local_commit:
+            self._lwe_local_lbl.setText(f"<code>{status.local_commit}</code>  ({status.local_date})")
+        else:
+            self._lwe_local_lbl.setText('<span style="color:#f38ba8">nicht gefunden</span>')
+
+        # Remote
+        if status.remote_commit != "?":
+            self._lwe_remote_lbl.setText(f"<code>{status.remote_commit}</code>  ({status.remote_date})")
+        else:
+            self._lwe_remote_lbl.setText('<span style="color:#888">nicht erreichbar</span>')
+
+        # Up-to-date
+        if status.remote_commit == "?":
+            self._lwe_upd_lbl.setText('<span style="color:#888">unbekannt</span>')
+            self._lwe_btn.setEnabled(False)
+        elif status.up_to_date:
+            self._lwe_upd_lbl.setText('<span style="color:#a6e3a1">✓ Aktuell</span>')
+            self._lwe_btn.setEnabled(False)
+        else:
+            self._lwe_upd_lbl.setText(
+                f'<span style="color:#89b4fa">Update verfügbar → {status.remote_commit} ({status.remote_date})</span>'
             )
-            return r.stdout.strip() or "unbekannt"
-        except Exception:
-            return "unbekannt"
+            self._lwe_btn.setEnabled(True)
+
+        # Compatibility
+        if status.compatible:
+            self._lwe_compat_lbl.setText('<span style="color:#a6e3a1">✓ Kompatibel</span>')
+        else:
+            missing = ", ".join(status.missing_flags)
+            self._lwe_compat_lbl.setText(
+                f'<span style="color:#f38ba8">✗ Inkompatibel: {missing}</span>'
+            )
 
     def _do_rollback(self, backup: Path):
         try:
