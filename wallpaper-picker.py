@@ -479,59 +479,57 @@ class LocalThumbnailWorker(QThread):
 
 
 class BuildWorker(QThread):
-    """Builds linux-wallpaperengine inside a distrobox container, streaming output."""
+    """Builds linux-wallpaperengine: git on host, cmake inside distrobox."""
     output_line = Signal(str)
     done        = Signal(bool, str, str)  # ok, message, binary_path
 
     def __init__(self, container: str, repo_dir: str):
         super().__init__()
-        self.container = container
-        self.repo_dir  = repo_dir
+        self._container_name = container
+        self.repo_dir        = repo_dir
 
-    def _run_step(self, label: str, cmd: str) -> bool:
+    def _run(self, label: str, cmd: list[str]) -> bool:
         self.output_line.emit(f"\n▶ {label}")
-        full_cmd = ["distrobox", "enter", self.container, "--",
-                    "bash", "-c", cmd]
-        try:
-            proc = subprocess.Popen(
-                full_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            for line in proc.stdout:  # type: ignore
-                self.output_line.emit(line.rstrip())
-            proc.wait()
-            if proc.returncode != 0:
-                self.output_line.emit(f"✗ Fehler (exit {proc.returncode})")
-                return False
-            self.output_line.emit("✓ OK")
-            return True
-        except Exception as e:
-            self.output_line.emit(f"✗ {e}")
-            return False
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+        for line in proc.stdout:  # type: ignore
+            self.output_line.emit(line.rstrip())
+        proc.wait()
+        ok = proc.returncode == 0
+        self.output_line.emit("✓ OK" if ok else f"✗ exit {proc.returncode}")
+        return ok
+
+    def _in_container(self, label: str, bash_cmd: str) -> bool:
+        return self._run(label, ["distrobox", "enter", self._container_name, "--", "bash", "-c", bash_cmd])
 
     def run(self):
-        repo = self.repo_dir
+        repo   = self.repo_dir
         binary = f"{repo}/build/output/linux-wallpaperengine"
 
-        steps = [
-            ("Repository prüfen / klonen",
-             f'[ -d "{repo}/.git" ] || git clone https://github.com/Almamu/linux-wallpaperengine "{repo}"'),
-            ("Dependencies installieren (Fedora)",
+        # git runs on the HOST
+        if not Path(repo).exists():
+            if not self._run("Repository klonen",
+                             ["git", "clone",
+                              "https://github.com/Almamu/linux-wallpaperengine", repo]):
+                self.done.emit(False, "git clone fehlgeschlagen", "")
+                return
+        else:
+            self._run("git pull", ["git", "-C", repo, "pull", "--ff-only"])
+
+        # Build steps run INSIDE the container
+        container_steps = [
+            ("Dependencies installieren",
              "sudo dnf install -y cmake gcc-c++ glm-devel glfw-devel zlib-devel "
-             "pulseaudio-libs-devel lz4-devel ffmpeg-devel SDL2-devel 2>/dev/null || "
-             "sudo dnf install -y cmake gcc-c++ glm-devel glfw-devel zlib-devel lz4-devel SDL2-devel"),
+             "pulseaudio-libs-devel lz4-devel ffmpeg-devel SDL2-devel 2>/dev/null || true"),
             ("CMake konfigurieren",
              f'cd "{repo}" && cmake -B build -DCMAKE_BUILD_TYPE=Release'),
             ("Build (kann einige Minuten dauern…)",
              f'cd "{repo}" && cmake --build build -j$(nproc)'),
         ]
-
-        for label, cmd in steps:
-            if not self._run_step(label, cmd):
-                self.done.emit(False, f"Build fehlgeschlagen bei: {label}", "")
+        for label, cmd in container_steps:
+            if not self._in_container(label, cmd):
+                self.done.emit(False, f"Fehlgeschlagen bei: {label}", "")
                 return
 
         self.done.emit(True, "Build erfolgreich!", binary)
@@ -648,19 +646,33 @@ class SelfUpdateWorker(QThread):
 
 
 class UpdateLWEWorker(QThread):
-    """git pull + incremental cmake build for linux-wallpaperengine."""
+    """git pull (host) + incremental cmake build (distrobox)."""
     output_line = Signal(str)
     done        = Signal(bool, str)
 
     def __init__(self, container: str, repo_dir: str):
         super().__init__()
-        self._container = container
-        self._repo_dir  = repo_dir
+        self._container_name = container
+        self._repo_dir       = repo_dir
 
-    def _step(self, label: str, cmd: str) -> bool:
+    def _host(self, label: str, cmd: list[str]) -> bool:
+        """Run a command on the host and stream output."""
         self.output_line.emit(f"\n▶ {label}")
         proc = subprocess.Popen(
-            ["distrobox", "enter", self._container, "--", "bash", "-c", cmd],
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+        for line in proc.stdout:  # type: ignore
+            self.output_line.emit(line.rstrip())
+        proc.wait()
+        ok = proc.returncode == 0
+        self.output_line.emit("✓ OK" if ok else f"✗ exit {proc.returncode}")
+        return ok
+
+    def _container(self, label: str, cmd: str) -> bool:
+        """Run a command inside the distrobox container."""
+        self.output_line.emit(f"\n▶ {label}")
+        proc = subprocess.Popen(
+            ["distrobox", "enter", self._container_name, "--", "bash", "-c", cmd],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
         for line in proc.stdout:  # type: ignore
@@ -672,13 +684,18 @@ class UpdateLWEWorker(QThread):
 
     def run(self):
         r = self._repo_dir
-        # Show commit before update
-        self._step("Aktueller Commit", f'git -C "{r}" log -1 --format="Vorher: %h — %s"')
-        if not self._step("git pull", f'git -C "{r}" pull --ff-only'):
+        # git runs on the HOST — no container needed
+        self._host("Aktueller Commit",
+                   ["git", "-C", r, "log", "-1", "--format=Vorher: %h — %s"])
+        if not self._host("git pull",
+                          ["git", "-C", r, "pull", "--ff-only"]):
             self.done.emit(False, "git pull fehlgeschlagen — evtl. lokale Änderungen vorhanden.")
             return
-        self._step("Neuer Commit", f'git -C "{r}" log -1 --format="Nachher: %h — %s"')
-        if not self._step("cmake build", f'cd "{r}" && cmake --build build -j$(nproc)'):
+        self._host("Neuer Commit",
+                   ["git", "-C", r, "log", "-1", "--format=Nachher: %h — %s"])
+        # cmake build runs INSIDE the container
+        if not self._container("cmake build",
+                               f'cd "{r}" && cmake --build build -j$(nproc)'):
             self.done.emit(False, "Build fehlgeschlagen.")
             return
         self.done.emit(True, "linux-wallpaperengine aktualisiert.")
