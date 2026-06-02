@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """linux-wallpaperengine GUI — AIO für Linux (Atomic-First)"""
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 __changelog__: dict[str, list[str]] = {
+    "1.0.3": [
+        "System-Tray: Rechtsklick-Menü mit Zuletzt verwendet, Zufällig, Service-Toggle",
+        "Fenster schließen versteckt die App (Beenden nur über Tray → Beenden)",
+        "Start-Flag --minimized / --tray für Autostart ohne Fenster",
+        "Tray-Icon: preferences-desktop-wallpaper + gemalter Fallback",
+        "App-Name 'wallpaper-picker' statt Skriptdateiname in KDE-Tray",
+    ],
     "1.0.2": [
         "LWE-Versionserkennung: Commit-Hash, Datum, Update-Check via GitHub API",
         "Kompatibilitätsprüfung: --help-Parsing, Required-Flags-Check",
@@ -41,9 +48,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import random as _random
+
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QPixmap, QCursor, QFont
+from PySide6.QtGui import QPixmap, QCursor, QFont, QIcon, QColor, QPainter, QAction
 from PySide6.QtWidgets import (
+    QSystemTrayIcon, QMenu,
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPushButton, QSpinBox, QLineEdit, QFormLayout,
     QGroupBox, QStatusBar, QTabWidget, QScrollArea, QGridLayout,
@@ -112,8 +122,9 @@ class Config:
     fps: int           = 30
     service_name: str  = "linux-wallpaperengine"
     steam_api_key: str    = ""
-    update_url: str       = ""   # raw GitHub URL to wallpaper-picker.py
-    last_update_check: float = 0.0  # unix timestamp
+    update_url: str       = ""
+    last_update_check: float = 0.0
+    recent_wallpapers: list = dataclasses.field(default_factory=list)  # list[str] of wp IDs
 
     _BINARY_HINTS = [
         Path.home() / "linux-wallpaperengine/build/output/linux-wallpaperengine",
@@ -2252,6 +2263,156 @@ class SettingsDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# System Tray
+# ---------------------------------------------------------------------------
+
+def _make_tray_icon() -> QIcon:
+    """Returns a themed icon or a simple painted fallback."""
+    icon = QIcon.fromTheme("preferences-desktop-wallpaper")
+    if not icon.isNull():
+        return icon
+    pix = QPixmap(32, 32)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setBrush(QColor("#89b4fa"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(0, 0, 32, 32, 6, 6)
+    p.setPen(QColor("#1e1e2e"))
+    p.setFont(QFont("Sans", 14, QFont.Weight.Bold))
+    p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "W")
+    p.end()
+    return QIcon(pix)
+
+
+class TrayIcon(QSystemTrayIcon):
+    def __init__(self, app: "QApplication", win: "MainWindow"):
+        super().__init__(_make_tray_icon(), app)
+        self._app = app
+        self._win = win
+        self.setToolTip("Wallpaper Engine – Linux")
+        self.activated.connect(self._on_activate)
+        self._svc_timer = QTimer(self)
+        self._svc_timer.timeout.connect(self._refresh_svc)
+        self._svc_timer.start(10_000)
+        self.rebuild_menu()
+
+    # ------------------------------------------------------------------
+
+    def rebuild_menu(self):
+        menu = QMenu()
+        installed: dict[str, "Wallpaper"] = {wp.id: wp for wp in self._win._installed}
+        recents: list[str] = self._win._cfg.recent_wallpapers
+
+        # Recent wallpapers
+        valid_recents = [r for r in recents if r in installed]
+        if valid_recents:
+            menu.addSection("Zuletzt verwendet")
+            for wp_id in valid_recents[:5]:
+                wp = installed[wp_id]
+                act = QAction(wp.title, menu)
+                if wp.preview_path:
+                    pix = QPixmap(str(wp.preview_path)).scaled(
+                        22, 22,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    act.setIcon(QIcon(pix))
+                act.triggered.connect(lambda checked=False, id=wp_id: self._apply(id))
+                menu.addAction(act)
+            menu.addSeparator()
+
+        # Random
+        rand_act = QAction("🎲  Zufälliges Wallpaper", menu)
+        rand_act.triggered.connect(self._apply_random)
+        rand_act.setEnabled(bool(self._win._installed))
+        menu.addAction(rand_act)
+        menu.addSeparator()
+
+        # Service status (non-interactive label + toggle)
+        self._svc_label_act = QAction("…", menu)
+        self._svc_label_act.setEnabled(False)
+        menu.addAction(self._svc_label_act)
+
+        toggle_act = QAction("Service starten / stoppen", menu)
+        toggle_act.triggered.connect(self._toggle_svc)
+        menu.addAction(toggle_act)
+        menu.addSeparator()
+
+        # Open / Quit
+        open_act = QAction("Öffnen", menu)
+        open_act.triggered.connect(self._show)
+        menu.addAction(open_act)
+
+        quit_act = QAction("Beenden", menu)
+        quit_act.triggered.connect(self._quit)
+        menu.addAction(quit_act)
+
+        self.setContextMenu(menu)
+        self._refresh_svc()
+
+    # ------------------------------------------------------------------
+
+    def _on_activate(self, reason: QSystemTrayIcon.ActivationReason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show()
+
+    def _show(self):
+        self._win.show()
+        self._win.raise_()
+        self._win.activateWindow()
+
+    def _apply(self, wp_id: str):
+        """Apply wallpaper to all monitors that are currently configured."""
+        configs = self._win._monitor_panel.get_configs()
+        # Override first monitor; keep others unchanged
+        if configs:
+            configs[0].wallpaper_id = wp_id
+        else:
+            configs = [MonitorConfig(name=self._win._monitors[0], wallpaper_id=wp_id)]
+        worker = ApplyWorker(self._win._cfg, configs, self._win._cfg.fps)
+        worker.done.connect(lambda ok, msg: self.showMessage(
+            "Wallpaper Engine",
+            msg,
+            QSystemTrayIcon.MessageIcon.Information if ok else QSystemTrayIcon.MessageIcon.Warning,
+            3000,
+        ))
+        worker.start()
+        self._win._workers.append(worker)
+
+    def _apply_random(self):
+        if self._win._installed:
+            wp = _random.choice(self._win._installed)
+            self._apply(wp.id)
+
+    def _toggle_svc(self):
+        r = subprocess.run(
+            ["systemctl", "--user", "is-active", self._win._cfg.service_name],
+            capture_output=True, text=True, timeout=3,
+        )
+        action = "stop" if r.stdout.strip() == "active" else "start"
+        w = ServiceControlWorker(action, self._win._cfg.service_name)
+        w.done.connect(lambda *_: self._refresh_svc())
+        w.start()
+
+    def _refresh_svc(self):
+        if not hasattr(self, "_svc_label_act"):
+            return
+        r = subprocess.run(
+            ["systemctl", "--user", "is-active", self._win._cfg.service_name],
+            capture_output=True, text=True, timeout=3,
+        )
+        active = r.stdout.strip() == "active"
+        self._svc_label_act.setText("● Service aktiv" if active else "○ Service inaktiv")
+
+    def _quit(self):
+        for w in self._win._workers:
+            if w.isRunning():
+                w.quit()
+                w.wait(2000)
+        self._app.quit()
+
+
+# ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
 
@@ -2266,8 +2427,9 @@ class MainWindow(QMainWindow):
         self._svc_configs, _ = parse_service()
         self._monitors = get_monitors()
 
-        self._workers: list[QThread] = []  # tracked for cleanup
+        self._workers: list[QThread] = []
         self._meta_worker: Optional[SteamMetaWorker] = None
+        self._tray: Optional[TrayIcon] = None
 
         self._build_ui()
         self._init_selections()
@@ -2281,6 +2443,14 @@ class MainWindow(QMainWindow):
             self._cfg.last_update_check = time.time()
             self._cfg.save()
             QTimer.singleShot(3000, self._silent_update_check)
+
+    def init_tray(self, app: "QApplication"):
+        """Called after app is created so QSystemTrayIcon has a valid parent."""
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = TrayIcon(app, self)
+            self._tray.show()
+        else:
+            self._status.showMessage("Kein System-Tray verfügbar — Fenster schließen beendet die App.", 5000)
 
     def _build_ui(self):
         toolbar = QToolBar()
@@ -2449,6 +2619,20 @@ class MainWindow(QMainWindow):
         self._apply_btn.setEnabled(True)
         self._status.showMessage(msg)
         self._svc_status_widget.refresh()
+        if ok:
+            # Track recently applied wallpapers
+            configs = self._monitor_panel.get_configs()
+            for mc in configs:
+                if mc.wallpaper_id:
+                    recents: list = self._cfg.recent_wallpapers
+                    if mc.wallpaper_id in recents:
+                        recents.remove(mc.wallpaper_id)
+                    recents.insert(0, mc.wallpaper_id)
+                    self._cfg.recent_wallpapers = recents[:10]
+                    self._cfg.save()
+                    break
+            if self._tray:
+                self._tray.rebuild_menu()
 
     def _run_wizard(self):
         wizard = SetupWizard(self._cfg, self)
@@ -2514,11 +2698,21 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Konfiguration gespeichert.")
 
     def closeEvent(self, event):
-        for w in self._workers:
-            if w.isRunning():
-                w.quit()
-                w.wait(2000)
-        event.accept()
+        if self._tray and self._tray.isVisible():
+            self.hide()
+            event.ignore()
+            self._tray.showMessage(
+                "Wallpaper Engine – Linux",
+                "Läuft im Hintergrund. Rechtsklick auf das Tray-Icon → Beenden.",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000,
+            )
+        else:
+            for w in self._workers:
+                if w.isRunning():
+                    w.quit()
+                    w.wait(2000)
+            event.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -2575,7 +2769,16 @@ def _setup_palette(app: QApplication):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setApplicationName("wallpaper-picker")
+    app.setApplicationDisplayName("Wallpaper Engine – Linux")
+    app.setOrganizationName("TKxRIZ")
+    app.setQuitOnLastWindowClosed(False)
     _setup_palette(app)
+
     win = MainWindow()
-    win.show()
+    win.init_tray(app)
+
+    if "--minimized" not in sys.argv and "--tray" not in sys.argv:
+        win.show()
+
     sys.exit(app.exec())

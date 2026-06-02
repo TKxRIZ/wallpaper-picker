@@ -68,6 +68,36 @@ StartupNotify=true
 EOF
 ok "Desktop-Eintrag → $DESKTOP_DIR/wallpaper-picker.desktop"
 
+# Autostart entry (starts minimized to tray)
+AUTOSTART_DIR="$HOME/.config/autostart"
+mkdir -p "$AUTOSTART_DIR"
+cat > "$AUTOSTART_DIR/wallpaper-picker.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Wallpaper Engine – Linux (Autostart)
+Exec=$APP_DEST --minimized
+Icon=preferences-desktop-wallpaper
+X-KDE-autostart-condition=ksmserver
+Hidden=false
+NoDisplay=true
+EOF
+ok "Autostart → $AUTOSTART_DIR/wallpaper-picker.desktop (--minimized)"
+
+# ── KDE: make tray icon always visible ──────────────────────────────────────
+KDE_CFG="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+if [[ -f "$KDE_CFG" ]] && ! grep -q "shownItems.*wallpaper-picker" "$KDE_CFG"; then
+    # Add shownItems=wallpaper-picker before each knownItems line
+    python3 -c "
+import re, sys
+from pathlib import Path
+path = Path('$KDE_CFG')
+text = path.read_text()
+# Add wallpaper-picker to knownItems
+text = re.sub(r'(knownItems=[^\n]+)', r'shownItems=wallpaper-picker\n\1', text, count=1)
+path.write_text(text)
+" && ok "KDE Tray-Icon sichtbar gesetzt" || warn "KDE-Config nicht aktualisiert"
+fi
+
 # ── 4. systemd-Service (nur wenn nicht vorhanden) ───────────────────────────
 
 if [[ ! -f "$SERVICE_FILE" ]]; then
