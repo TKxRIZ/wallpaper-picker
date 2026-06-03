@@ -242,6 +242,8 @@ _strings: dict[str, dict[str, str]] = {
     "card_cfg_active":     {"de": "Eigene Konfiguration (aktiv)", "en": "Custom configuration (active)"},
 
     # ── Workers (user-visible messages) ──────────────────────────────────────
+    "check_no_version":    {"de": "Keine Versionsinformation gefunden.",               "en": "No version information found."},
+    "check_network_err":   {"de": "Netzwerkfehler: {reason}",                         "en": "Network error: {reason}"},
     "worker_fetch_fail":   {"de": "Fetch fehlgeschlagen — Internetverbindung prüfen.", "en": "Fetch failed — check internet connection."},
     "worker_reset_fail":   {"de": "Reset fehlgeschlagen.",        "en": "Reset failed."},
     "worker_update_ok":    {"de": "Update erfolgreich — App wird neu gestartet.", "en": "Update successful — restarting app."},

@@ -269,7 +269,8 @@ class UpdateChecker(QThread):
 
             vm = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', head)
             if not vm:
-                self.check_failed.emit("Keine Versionsinformation gefunden.")
+                from .i18n import t
+                self.check_failed.emit(t("check_no_version"))
                 return
             remote = vm.group(1)
 
@@ -286,7 +287,8 @@ class UpdateChecker(QThread):
             else:
                 self.up_to_date.emit(remote)
         except urllib.error.URLError as e:
-            self.check_failed.emit(f"Netzwerk-Fehler: {e.reason}")
+            from .i18n import t
+            self.check_failed.emit(t("check_network_err", reason=e.reason))
         except Exception as e:
             self.check_failed.emit(str(e))
 

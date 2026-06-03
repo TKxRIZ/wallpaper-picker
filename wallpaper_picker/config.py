@@ -45,12 +45,22 @@ class Config:
             try:
                 raw = json.loads(CONFIG_PATH.read_text())
                 valid = {f.name for f in dataclasses.fields(cls)}
-                return cls(**{k: v for k, v in raw.items() if k in valid})
+                cfg = cls(**{k: v for k, v in raw.items() if k in valid})
+                cfg._migrate()
+                return cfg
             except Exception:
                 pass
         c = cls()
         c.autodetect()
         return c
+
+    def _migrate(self) -> None:
+        # Fix stale update_url pointing to old single-file path
+        if self.update_url.endswith("/wallpaper-picker.py"):
+            self.update_url = self.update_url.replace(
+                "/wallpaper-picker.py", "/wallpaper_picker/__init__.py"
+            )
+            self.save()
 
     def autodetect(self):
         if not self.binary:
