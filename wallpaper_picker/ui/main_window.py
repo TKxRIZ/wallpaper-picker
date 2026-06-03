@@ -201,9 +201,9 @@ class MainWindow(QMainWindow):
         self._apply_btn.setEnabled(False)
         self._status.showMessage("Wird angewendet…")
 
-        # Load per-wallpaper config for the first active wallpaper
-        active_id = next((mc.wallpaper_id for mc in configs if mc.wallpaper_id), None)
-        wp_cfg = WallpaperConfig.load(active_id) if active_id else None
+        # Merge per-wallpaper configs for all active monitors
+        active_ids = [mc.wallpaper_id for mc in configs if mc.wallpaper_id]
+        wp_cfg = WallpaperConfig.merge([WallpaperConfig.load(i) for i in active_ids]) if active_ids else None
 
         worker = ApplyWorker(self._cfg, configs, self._fps_spin.value(), wp_cfg)
         worker.done.connect(self._on_apply_done)

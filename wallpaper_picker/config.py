@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import CONFIG_PATH, ENGINE_DIR, LWE_MIN_COMMIT_DATE
+from .constants import CONFIG_PATH, ENGINE_DIR, LWE_MIN_COMMIT_DATE, PROJECT_DIR
 
 
 @dataclass
@@ -21,6 +21,7 @@ class Config:
     update_url: str       = ""
     last_update_check: float = 0.0
     dismissed_update: str    = ""
+    project_dir: str         = str(PROJECT_DIR)
     fullscreen_pause: bool   = True
     disable_particles: bool  = False
     disable_mouse: bool      = False

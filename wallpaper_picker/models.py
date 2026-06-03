@@ -19,6 +19,27 @@ class WallpaperConfig:
     def is_customized(self) -> bool:
         return any(v is not None for v in dataclasses.asdict(self).values())
 
+    @classmethod
+    def merge(cls, configs: list["WallpaperConfig"]) -> "WallpaperConfig":
+        """Merge configs from multiple active wallpapers.
+
+        fps: minimum of all overrides (most conservative).
+        booleans: True wins — if any wallpaper enables a restriction, it applies.
+        """
+        if not configs:
+            return cls()
+        fps_values = [c.fps for c in configs if c.fps is not None]
+        def _any_true(attr: str) -> Optional[bool]:
+            vals = [getattr(c, attr) for c in configs if getattr(c, attr) is not None]
+            return True if True in vals else (False if vals else None)
+        return cls(
+            fps               = min(fps_values) if fps_values else None,
+            fullscreen_pause  = _any_true("fullscreen_pause"),
+            disable_particles = _any_true("disable_particles"),
+            disable_mouse     = _any_true("disable_mouse"),
+            no_audio_processing = _any_true("no_audio_processing"),
+        )
+
     def save(self, wp_id: str) -> None:
         _WP_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
         data = {k: v for k, v in dataclasses.asdict(self).items() if v is not None}
