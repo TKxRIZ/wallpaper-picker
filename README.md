@@ -17,6 +17,7 @@ A GUI frontend for [linux-wallpaperengine](https://github.com/Almamu/linux-wallp
 - **Service management** — start/stop/restart, autostart toggle, live log view
 - **Setup wizard** — guided first-run, can build linux-wallpaperengine inside a Distrobox container
 - **Atomic-first** — runs on immutable distros without system packages (Distrobox, Toolbox, or direct)
+- **German / English UI** — switch language in Settings → Engine
 
 ## Requirements
 
@@ -61,13 +62,14 @@ The tray runs permanently in the background. The GUI is launched on demand.
 
 | Action | How |
 |---|---|
-| Apply wallpaper | Click a wallpaper → **Anwenden** |
+| Apply wallpaper | Click a wallpaper → **Apply** |
 | Multi-monitor | Click a monitor in the right panel → click a wallpaper |
-| Change FPS | Right panel → Wiedergabe → FPS |
+| Change FPS | Right panel → Playback → FPS |
 | Per-wallpaper settings | Click the **⚙** button on a wallpaper card |
-| Pause/resume | Tray icon → **⏸ Pausieren** / **▶ Fortsetzen** |
+| Pause/resume | Tray icon → **⏸ Pause** / **▶ Resume** |
 | Check for updates | Toolbar → **↑ Updates** or wait for the tray to notify |
-| Settings | Toolbar → **⚙ Einstellungen** |
+| Settings | Toolbar → **⚙ Settings** |
+| Change language | Settings → Engine → Language |
 
 ## Settings
 
@@ -75,7 +77,7 @@ Settings are stored in `~/.config/wallpaper-picker/config.json`.
 
 | Section | What's there |
 |---|---|
-| Engine | Execution mode, binary path, assets dir, performance flags |
+| Engine | Execution mode, binary path, assets dir, performance flags, language |
 | Service | Start/stop/restart, autostart, live log |
 | Updates | Update URL, wallpaper-picker version check, linux-wallpaperengine status |
 | Info | System info, setup guide for your distro |
@@ -101,7 +103,7 @@ Configurations are stored in `~/.config/wallpaper-picker/wallpaper-configs/<id>.
 
 ## Updating
 
-Updates are checked automatically by the tray on startup. When an update is available, the GUI shows a banner. Clicking **Aktualisieren** will:
+Updates are checked automatically by the tray on startup. When an update is available, the GUI shows a banner. Clicking **Update** will:
 
 1. `git fetch origin` + `git reset --hard origin/main`
 2. Re-run `install.sh` to update the launcher, desktop files, and tray binary
