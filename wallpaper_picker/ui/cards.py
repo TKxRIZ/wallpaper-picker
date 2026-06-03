@@ -1,11 +1,11 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..constants import CARD_W, CARD_H, THUMB_W, THUMB_H
-from ..models import Wallpaper
+from ..models import Wallpaper, WallpaperConfig
 
 _CARD_NORMAL = (
     "WallpaperCard{background:#1e1e2e;border:1px solid #313244;border-radius:8px;}"
@@ -15,10 +15,21 @@ _CARD_SELECTED = (
     "WallpaperCard{background:#1e2a3a;border:2px solid #89b4fa;border-radius:8px;}"
     "WallpaperCard:hover{background:#1e3050;border:2px solid #89dceb;}"
 )
+_CFG_BTN = (
+    "QPushButton{background:rgba(30,30,46,180);color:#585b70;border:1px solid #313244;"
+    "border-radius:4px;font-size:13px;padding:0;}"
+    "QPushButton:hover{background:#1e3a5f;color:#89b4fa;border-color:#89b4fa;}"
+)
+_CFG_BTN_ACTIVE = (
+    "QPushButton{background:#1e3a5f;color:#89b4fa;border:1px solid #89b4fa;"
+    "border-radius:4px;font-size:13px;padding:0;}"
+    "QPushButton:hover{background:#263f5a;color:#89dceb;}"
+)
 
 
 class WallpaperCard(QFrame):
-    clicked = Signal(str)
+    clicked   = Signal(str)
+    configure = Signal(str)
 
     def __init__(self, wallpaper: Wallpaper, parent=None):
         super().__init__(parent)
@@ -27,6 +38,7 @@ class WallpaperCard(QFrame):
         self.setFrameShape(QFrame.Shape.Box)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._build()
+        self._refresh_cfg_btn()
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -50,6 +62,19 @@ class WallpaperCard(QFrame):
         layout.addWidget(title)
         self.setStyleSheet(_CARD_NORMAL)
 
+        # Config button — positioned absolute in bottom-right of thumbnail
+        self._cfg_btn = QPushButton("⚙", self)
+        self._cfg_btn.setFixedSize(22, 22)
+        self._cfg_btn.setToolTip("Eigene Konfiguration")
+        self._cfg_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._cfg_btn.move(CARD_W - 28, THUMB_H - 18)
+        self._cfg_btn.clicked.connect(lambda: self.configure.emit(self.wallpaper.id))
+
+    def _refresh_cfg_btn(self):
+        has_cfg = WallpaperConfig.load(self.wallpaper.id).is_customized()
+        self._cfg_btn.setStyleSheet(_CFG_BTN_ACTIVE if has_cfg else _CFG_BTN)
+        self._cfg_btn.setToolTip("Eigene Konfiguration (aktiv)" if has_cfg else "Eigene Konfiguration")
+
     def set_pixmap(self, pix: QPixmap):
         self.thumb.setPixmap(pix.scaled(
             THUMB_W, THUMB_H,
@@ -61,12 +86,15 @@ class WallpaperCard(QFrame):
     def set_selected(self, on: bool):
         self.setStyleSheet(_CARD_SELECTED if on else _CARD_NORMAL)
 
-    def mousePressEvent(self, _):
-        self.clicked.emit(self.wallpaper.id)
+    def mousePressEvent(self, event):
+        # Only emit clicked if not hitting the config button
+        if not self._cfg_btn.geometry().contains(event.pos()):
+            self.clicked.emit(self.wallpaper.id)
 
 
 class WallpaperGrid(QWidget):
     selection_changed = Signal(str)
+    configure         = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,8 +125,13 @@ class WallpaperGrid(QWidget):
         for wp in wallpapers:
             card = WallpaperCard(wp)
             card.clicked.connect(self._on_click)
+            card.configure.connect(self.configure)
             self._cards[wp.id] = card
         self._relayout()
+
+    def refresh_card(self, wp_id: str):
+        if wp_id in self._cards:
+            self._cards[wp_id]._refresh_cfg_btn()
 
     def update_card_pixmap(self, wp_id: str, pix: QPixmap):
         if wp_id in self._cards:

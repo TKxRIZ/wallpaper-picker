@@ -22,13 +22,13 @@ from .engine import write_service
 class ApplyWorker(QThread):
     done = Signal(bool, str)
 
-    def __init__(self, cfg: Config, configs: list[MonitorConfig], fps: int):
+    def __init__(self, cfg: Config, configs: list[MonitorConfig], fps: int, wp_cfg=None):
         super().__init__()
-        self.cfg, self.configs, self.fps = cfg, configs, fps
+        self.cfg, self.configs, self.fps, self.wp_cfg = cfg, configs, fps, wp_cfg
 
     def run(self):
         try:
-            write_service(self.cfg, self.configs, self.fps)
+            write_service(self.cfg, self.configs, self.fps, self.wp_cfg)
             subprocess.run(["pkill", "-f", "linux-wallpaperengine"], capture_output=True, timeout=5)
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=10)
             subprocess.run(
@@ -352,13 +352,19 @@ class LWEVersionChecker(QThread):
 
         if self._cfg.binary and Path(self._cfg.binary).exists():
             try:
+                bin_dir = str(Path(self._cfg.binary).parent)
+                lib_dir = str(Path(self._cfg.binary).parent.parent / "lib")
+                ld_path = f"{bin_dir}:{lib_dir}"
                 if self._cfg.mode == "distrobox":
-                    cmd = ["distrobox", "enter", self._cfg.container, "--", self._cfg.binary, "--help"]
+                    cmd = ["distrobox", "enter", self._cfg.container, "--",
+                           "bash", "-c", f"LD_LIBRARY_PATH={ld_path} {self._cfg.binary} --help"]
                 elif self._cfg.mode == "toolbox":
-                    cmd = ["toolbox", "run", "--container", self._cfg.container, self._cfg.binary, "--help"]
+                    cmd = ["toolbox", "run", "--container", self._cfg.container,
+                           "bash", "-c", f"LD_LIBRARY_PATH={ld_path} {self._cfg.binary} --help"]
                 else:
                     cmd = [self._cfg.binary, "--help"]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+                                   env={**__import__("os").environ, "LD_LIBRARY_PATH": ld_path})
                 help_text           = r.stdout + r.stderr
                 status.supported_flags = re.findall(r'(--[\w-]+)', help_text)
                 status.missing_flags   = [f for f in LWE_REQUIRED_FLAGS if f not in status.supported_flags]

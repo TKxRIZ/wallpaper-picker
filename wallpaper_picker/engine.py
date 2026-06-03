@@ -39,7 +39,7 @@ def parse_service() -> tuple[list[MonitorConfig], int]:
         return [], 30
 
 
-def write_service(cfg: Config, monitor_configs: list[MonitorConfig], fps: int):
+def write_service(cfg: Config, monitor_configs: list[MonitorConfig], fps: int, wp_cfg=None):
     issues = validate_setup(cfg)
     if issues:
         raise ValueError("Konfiguration unvollständig:\n• " + "\n• ".join(issues))
@@ -50,7 +50,7 @@ def write_service(cfg: Config, monitor_configs: list[MonitorConfig], fps: int):
         f"--screen-root {mc.name} --bg {mc.wallpaper_id}"
         for mc in monitor_configs if mc.wallpaper_id
     )
-    exec_start = cfg.build_exec_start(screen_args, fps)
+    exec_start = cfg.build_exec_start(screen_args, fps, wp_cfg)
 
     if SERVICE_FILE.exists():
         SERVICE_FILE.with_suffix(".bak").write_text(SERVICE_FILE.read_text())

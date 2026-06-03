@@ -20,6 +20,11 @@ class Config:
     steam_api_key: str    = ""
     update_url: str       = ""
     last_update_check: float = 0.0
+    dismissed_update: str    = ""
+    fullscreen_pause: bool   = True
+    disable_particles: bool  = False
+    disable_mouse: bool      = False
+    no_audio_processing: bool = False
     recent_wallpapers: list  = dataclasses.field(default_factory=list)
 
     _BINARY_HINTS = [
@@ -63,7 +68,21 @@ class Config:
         tmp.write_text(json.dumps(dataclasses.asdict(self), indent=2))
         tmp.replace(CONFIG_PATH)
 
-    def build_exec_start(self, screen_args: str, fps: int) -> str:
+    def build_exec_start(self, screen_args: str, fps: int, wp_cfg=None) -> str:
+        # wp_cfg is an optional WallpaperConfig; its non-None values override global settings
+        def _get(attr):
+            if wp_cfg is not None:
+                v = getattr(wp_cfg, attr, None)
+                if v is not None:
+                    return v
+            return getattr(self, attr)
+
+        effective_fps              = wp_cfg.fps if (wp_cfg and wp_cfg.fps is not None) else fps
+        effective_fullscreen_pause = _get("fullscreen_pause")
+        effective_particles        = _get("disable_particles")
+        effective_mouse            = _get("disable_mouse")
+        effective_audio            = _get("no_audio_processing")
+
         bin_dir = str(Path(self.binary).parent) if self.binary else "."
         lib_dir = str(Path(self.binary).parent.parent / "lib") if self.binary else ""
         ld_path = f"{bin_dir}:{lib_dir}" if bin_dir else ""
@@ -73,11 +92,15 @@ class Config:
             "XDG_SESSION_TYPE=wayland"
             + (f" LD_LIBRARY_PATH={ld_path}" if ld_path else "")
         )
+        extra_flags = " --fullscreen-pause-only-active" if effective_fullscreen_pause else ""
+        if effective_particles: extra_flags += " --disable-particles"
+        if effective_mouse:     extra_flags += " --disable-mouse"
+        if effective_audio:     extra_flags += " --no-audio-processing"
         inner = (
             f"cd {bin_dir} && {env} "
             f"./linux-wallpaperengine "
             f"--assets-dir {self.assets_dir} "
-            f"--fps {fps} {screen_args}"
+            f"--fps {effective_fps}{extra_flags} {screen_args}"
         )
         if self.mode == "distrobox":
             return f'/usr/bin/distrobox enter {self.container} -- bash -c "{inner}"'

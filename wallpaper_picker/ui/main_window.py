@@ -1,3 +1,4 @@
+import json
 import time
 from typing import Optional
 
@@ -9,12 +10,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Config, validate_setup
-from ..constants import CONFIG_PATH
+from ..constants import CONFIG_PATH, UPDATE_STATE_PATH
 from ..engine import get_monitors, parse_service, load_installed, load_available_ids
+from ..models import WallpaperConfig
 from ..workers import ApplyWorker, SteamMetaWorker, UpdateChecker, QThread
 from .panels import SetupBanner, UpdateBanner, ServiceStatusWidget, MonitorPanel
 from .tabs import InstalledTab, AvailableTab
-from .dialogs import UpdateDialog, SettingsDialog
+from .dialogs import UpdateDialog, SettingsDialog, WallpaperConfigDialog
 from .wizard import SetupWizard
 
 
@@ -36,6 +38,8 @@ class MainWindow(QMainWindow):
 
         if not CONFIG_PATH.exists() or validate_setup(self._cfg):
             QTimer.singleShot(200, self._run_wizard)
+
+        QTimer.singleShot(500, self._check_tray_update_state)
 
         if self._cfg.update_url and (time.time() - self._cfg.last_update_check > 86400):
             self._cfg.last_update_check = time.time()
@@ -86,6 +90,7 @@ class MainWindow(QMainWindow):
         self._installed_tab = InstalledTab(self._installed)
         if hasattr(self._installed_tab, "grid"):
             self._installed_tab.wallpaper_selected.connect(self._on_wp_selected)
+            self._installed_tab.grid.configure.connect(self._open_wp_config)
         self._tabs.addTab(self._installed_tab, f"Installiert ({len(self._installed)})")
 
         self._available_tab = AvailableTab()
@@ -196,7 +201,11 @@ class MainWindow(QMainWindow):
         self._apply_btn.setEnabled(False)
         self._status.showMessage("Wird angewendet…")
 
-        worker = ApplyWorker(self._cfg, configs, self._fps_spin.value())
+        # Load per-wallpaper config for the first active wallpaper
+        active_id = next((mc.wallpaper_id for mc in configs if mc.wallpaper_id), None)
+        wp_cfg = WallpaperConfig.load(active_id) if active_id else None
+
+        worker = ApplyWorker(self._cfg, configs, self._fps_spin.value(), wp_cfg)
         worker.done.connect(self._on_apply_done)
         worker.start()
         self._workers.append(worker)
@@ -221,6 +230,18 @@ class MainWindow(QMainWindow):
         wizard = SetupWizard(self._cfg, self)
         wizard.setup_complete.connect(self._on_setup_complete)
         wizard.exec()
+
+    def _check_tray_update_state(self):
+        try:
+            state = json.loads(UPDATE_STATE_PATH.read_text())
+            if time.time() - state.get("checked_at", 0) > 90000:
+                return
+            picker = state.get("picker", {})
+            latest = picker.get("latest", "")
+            if picker.get("has_update") and latest != self._cfg.dismissed_update:
+                self._on_update_available(latest, {})
+        except Exception:
+            pass
 
     def _silent_update_check(self):
         if not self._cfg.update_url:
@@ -258,8 +279,14 @@ class MainWindow(QMainWindow):
         self._update_banner.deleteLater()
         self._update_banner = UpdateBanner(remote, self)
         self._update_banner.show_dialog.connect(self._show_update_dialog)
+        self._update_banner.dismissed.connect(self._on_banner_dismissed)
         outer = self.centralWidget().layout()
         outer.insertWidget(1, self._update_banner)
+
+    def _on_banner_dismissed(self, version: str):
+        self._cfg.dismissed_update = version
+        self._cfg.save()
+        self._update_check_btn.setStyleSheet("")
 
     def _show_update_dialog(self):
         if not hasattr(self, "_pending_update"):
@@ -268,6 +295,14 @@ class MainWindow(QMainWindow):
         remote, changelog = self._pending_update
         dlg = UpdateDialog(__version__, remote, changelog, self)
         dlg.exec()
+
+    def _open_wp_config(self, wp_id: str):
+        wp = next((w for w in self._installed if w.id == wp_id), None)
+        title = wp.title if wp else wp_id
+        dlg = WallpaperConfigDialog(wp_id, title, self._cfg, self)
+        if dlg.exec():
+            if hasattr(self._installed_tab, "grid"):
+                self._installed_tab.grid.refresh_card(wp_id)
 
     def _open_settings(self):
         dlg = SettingsDialog(self._cfg, self)

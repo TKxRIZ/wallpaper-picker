@@ -8,8 +8,9 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
+    QSpinBox, QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
@@ -19,7 +20,107 @@ from ..workers import (
     AppUpdateWorker, UpdateChecker, TestBinaryWorker,
     ServiceControlWorker, UpdateLWEWorker, LWEVersionChecker, BuildWorker,
 )
-from ..models import LWEStatus
+from ..models import LWEStatus, WallpaperConfig
+
+
+class WallpaperConfigDialog(QDialog):
+    """Per-wallpaper settings override dialog."""
+
+    def __init__(self, wallpaper_id: str, title: str, global_cfg: Config, parent=None):
+        super().__init__(parent)
+        self.wallpaper_id = wallpaper_id
+        self.global_cfg   = global_cfg
+        self.wp_cfg       = WallpaperConfig.load(wallpaper_id)
+        self.setWindowTitle(f"Konfiguration — {title}")
+        self.setMinimumWidth(420)
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+
+        # Header
+        info = QLabel(
+            "Eigene Einstellungen überschreiben die globale Konfiguration nur für dieses Wallpaper.\n"
+            "Leere Felder verwenden den globalen Wert."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#a6adc8; font-size:11px; padding:4px 0 8px 0;")
+        layout.addWidget(info)
+
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        layout.addLayout(form)
+
+        # FPS
+        from PySide6.QtWidgets import QSpinBox
+        fps_row = QHBoxLayout()
+        self._fps_enabled = QCheckBox()
+        self._fps_spin    = QSpinBox()
+        self._fps_spin.setRange(1, 120)
+        self._fps_spin.setValue(self.wp_cfg.fps if self.wp_cfg.fps is not None else self.global_cfg.fps)
+        self._fps_spin.setEnabled(self.wp_cfg.fps is not None)
+        self._fps_enabled.setChecked(self.wp_cfg.fps is not None)
+        self._fps_enabled.toggled.connect(self._fps_spin.setEnabled)
+        fps_row.addWidget(self._fps_enabled)
+        fps_row.addWidget(self._fps_spin, stretch=1)
+        fps_row.addWidget(QLabel(f"(Global: {self.global_cfg.fps})"))
+        form.addRow("FPS:", fps_row)
+
+        # Boolean overrides
+        self._bool_rows: dict[str, tuple[QCheckBox, QCheckBox]] = {}
+        bool_fields = [
+            ("fullscreen_pause",    "Vollbild-Pause"),
+            ("disable_particles",   "Partikel deaktivieren"),
+            ("disable_mouse",       "Maus-Interaktion deaktivieren"),
+            ("no_audio_processing", "Audio-Verarbeitung deaktivieren"),
+        ]
+        for attr, label in bool_fields:
+            row        = QHBoxLayout()
+            enabled_cb = QCheckBox()
+            value_cb   = QCheckBox(label)
+            cur_val    = getattr(self.wp_cfg, attr)
+            global_val = getattr(self.global_cfg, attr)
+            enabled_cb.setChecked(cur_val is not None)
+            value_cb.setChecked(cur_val if cur_val is not None else global_val)
+            value_cb.setEnabled(cur_val is not None)
+            enabled_cb.toggled.connect(value_cb.setEnabled)
+            global_hint = QLabel(f"(Global: {'an' if global_val else 'aus'})")
+            global_hint.setStyleSheet("color:#585b70; font-size:10px;")
+            row.addWidget(enabled_cb)
+            row.addWidget(value_cb, stretch=1)
+            row.addWidget(global_hint)
+            form.addRow("", row)
+            self._bool_rows[attr] = (enabled_cb, value_cb)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Reset |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Save).setText("Speichern")
+        btns.button(QDialogButtonBox.StandardButton.Reset).setText("Zurücksetzen")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Abbrechen")
+        btns.accepted.connect(self._save)
+        btns.button(QDialogButtonBox.StandardButton.Reset).clicked.connect(self._reset)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _save(self):
+        fps = self._fps_spin.value() if self._fps_enabled.isChecked() else None
+        self.wp_cfg = WallpaperConfig(fps=fps)
+        for attr, (enabled_cb, value_cb) in self._bool_rows.items():
+            setattr(self.wp_cfg, attr, value_cb.isChecked() if enabled_cb.isChecked() else None)
+        if self.wp_cfg.is_customized():
+            self.wp_cfg.save(self.wallpaper_id)
+        else:
+            self.wp_cfg.delete(self.wallpaper_id)
+        self.accept()
+
+    def _reset(self):
+        self.wp_cfg.delete(self.wallpaper_id)
+        self.wp_cfg = WallpaperConfig()
+        self.accept()
 
 
 class BuildDialog(QDialog):
@@ -152,88 +253,521 @@ class UpdateDialog(QDialog):
 class SettingsDialog(QDialog):
     saved = Signal()
 
+    # ── colours (Catppuccin Mocha) ──────────────────────────────────────────
+    _C_BG      = "#1e1e2e"
+    _C_SIDEBAR = "#181825"
+    _C_SURFACE = "#313244"
+    _C_OVERLAY = "#45475a"
+    _C_TEXT    = "#cdd6f4"
+    _C_SUBTEXT = "#a6adc8"
+    _C_MUTED   = "#585b70"
+    _C_BLUE    = "#89b4fa"
+    _C_GREEN   = "#a6e3a1"
+    _C_RED     = "#f38ba8"
+    _C_YELLOW  = "#f9e2af"
+
     def __init__(self, cfg: Config, parent=None):
         super().__init__(parent)
         self.cfg = cfg
-        self.setWindowTitle("Einstellungen")
-        self.resize(640, 520)
-        self._test_worker: Optional[TestBinaryWorker] = None
+        self.setWindowTitle("Einstellungen — Wallpaper Engine – Linux")
+        self.setMinimumSize(820, 580)
+        self.resize(860, 620)
+        self._test_worker:  Optional[TestBinaryWorker]  = None
+        self._lwe_checker:  Optional[LWEVersionChecker] = None
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._refresh_log)
         self._build()
 
+    # ── shell ───────────────────────────────────────────────────────────────
+
     def _build(self):
-        root = QVBoxLayout(self)
-        tabs = QTabWidget()
-        tabs.addTab(self._engine_tab(), "Engine")
-        tabs.addTab(self._service_tab(), "Service")
-        tabs.addTab(self._updates_tab(), "Updates")
-        tabs.addTab(self._info_tab(), "Info / Setup")
-        tabs.currentChanged.connect(self._on_tab)
-        root.addWidget(tabs)
-        self._tabs = tabs
+        self.setStyleSheet(f"QDialog{{background:{self._C_BG};}}")
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self._save)
-        btns.rejected.connect(self.reject)
-        root.addWidget(btns)
+        # Left sidebar
+        sidebar = QWidget()
+        sidebar.setFixedWidth(168)
+        sidebar.setStyleSheet(f"background:{self._C_SIDEBAR};")
+        sb_layout = QVBoxLayout(sidebar)
+        sb_layout.setContentsMargins(8, 16, 8, 16)
+        sb_layout.setSpacing(2)
 
-    def _engine_tab(self) -> QWidget:
-        w    = QWidget()
-        form = QFormLayout(w)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        logo = QLabel("⚙  Einstellungen")
+        logo.setStyleSheet(f"color:{self._C_SUBTEXT};font-size:11px;font-weight:bold;"
+                           f"padding:0 4px 12px 4px;letter-spacing:1px;")
+        sb_layout.addWidget(logo)
+
+        self._nav_btns: list[QPushButton] = []
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet(f"background:{self._C_BG};")
+
+        pages = [
+            ("🔧", "Engine",   self._page_engine()),
+            ("⚡", "Service",  self._page_service()),
+            ("↑",  "Updates",  self._page_updates()),
+            ("ℹ",  "Info",     self._page_info()),
+        ]
+        for i, (icon, label, page) in enumerate(pages):
+            btn = QPushButton(f"  {icon}  {label}")
+            btn.setCheckable(True)
+            btn.setChecked(i == 0)
+            btn.setStyleSheet(self._nav_style())
+            btn.clicked.connect(lambda _, idx=i: self._nav_select(idx))
+            sb_layout.addWidget(btn)
+            self._nav_btns.append(btn)
+            self._stack.addWidget(page)
+
+        sb_layout.addStretch()
+        root.addWidget(sidebar)
+
+        # Thin separator line
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setStyleSheet(f"color:{self._C_SURFACE};")
+        root.addWidget(sep)
+
+        # Right: stack + bottom bar
+        right = QWidget()
+        right.setStyleSheet(f"background:{self._C_BG};")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addWidget(self._stack, stretch=1)
+
+        # Bottom bar
+        bar = QWidget()
+        bar.setStyleSheet(f"background:{self._C_SIDEBAR};border-top:1px solid {self._C_SURFACE};")
+        bar.setFixedHeight(52)
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(16, 8, 16, 8)
+        bl.addStretch()
+
+        cancel_btn = QPushButton("Abbrechen")
+        cancel_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{self._C_SUBTEXT};border:1px solid {self._C_SURFACE};"
+            f"border-radius:5px;padding:5px 16px;}}"
+            f"QPushButton:hover{{background:{self._C_OVERLAY};color:{self._C_TEXT};}}"
+        )
+        cancel_btn.clicked.connect(self.reject)
+
+        save_btn = QPushButton("Speichern")
+        save_btn.setStyleSheet(
+            f"QPushButton{{background:{self._C_BLUE};color:#1e1e2e;font-weight:bold;"
+            f"border:none;border-radius:5px;padding:5px 20px;}}"
+            f"QPushButton:hover{{background:#b4c9fc;}}"
+        )
+        save_btn.clicked.connect(self._save)
+
+        bl.addWidget(cancel_btn)
+        bl.addSpacing(8)
+        bl.addWidget(save_btn)
+        rl.addWidget(bar)
+        root.addWidget(right, stretch=1)
+
+    def _nav_style(self) -> str:
+        return (
+            f"QPushButton{{background:transparent;color:{self._C_SUBTEXT};text-align:left;"
+            f"border:none;border-radius:6px;padding:8px 10px;font-size:13px;}}"
+            f"QPushButton:hover{{background:{self._C_SURFACE};color:{self._C_TEXT};}}"
+            f"QPushButton:checked{{background:{self._C_SURFACE};color:{self._C_BLUE};font-weight:bold;}}"
+        )
+
+    def _nav_select(self, idx: int):
+        self._stack.setCurrentIndex(idx)
+        for i, btn in enumerate(self._nav_btns):
+            btn.setChecked(i == idx)
+        if idx == 1:
+            self._refresh_status()
+            self._refresh_log()
+            self._log_timer.start(3000)
+        else:
+            self._log_timer.stop()
+
+    # ── page helpers ────────────────────────────────────────────────────────
+
+    def _scrollable(self, inner: QWidget) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        inner.setStyleSheet("background:transparent;")
+        scroll.setWidget(inner)
+        return scroll
+
+    def _section_header(self, text: str) -> QWidget:
+        w   = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 12, 0, 4)
+        row.setSpacing(8)
+        lbl = QLabel(text.upper())
+        lbl.setStyleSheet(
+            f"color:{self._C_BLUE};font-size:10px;font-weight:bold;letter-spacing:1.5px;"
+        )
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet(f"color:{self._C_SURFACE};")
+        row.addWidget(lbl)
+        row.addWidget(line, stretch=1)
+        return w
+
+    def _field(self, layout: QVBoxLayout, label: str, widget: QWidget, hint: str = "") -> None:
+        lbl = QLabel(label)
+        lbl.setStyleSheet(f"color:{self._C_SUBTEXT};font-size:11px;margin-bottom:2px;")
+        layout.addWidget(lbl)
+        layout.addWidget(widget)
+        if hint:
+            h = QLabel(hint)
+            h.setStyleSheet(f"color:{self._C_MUTED};font-size:10px;margin-top:1px;")
+            h.setWordWrap(True)
+            layout.addWidget(h)
+        layout.addSpacing(8)
+
+    def _input(self, text: str = "", placeholder: str = "") -> QLineEdit:
+        w = QLineEdit(text)
+        w.setPlaceholderText(placeholder)
+        w.setStyleSheet(
+            f"QLineEdit{{background:#11111b;border:1px solid {self._C_SURFACE};"
+            f"border-radius:5px;padding:5px 8px;color:{self._C_TEXT};}}"
+            f"QLineEdit:focus{{border-color:{self._C_BLUE};}}"
+            f"QLineEdit:disabled{{color:{self._C_MUTED};border-color:{self._C_SURFACE};}}"
+        )
+        return w
+
+    def _checkbox(self, label: str, checked: bool, hint: str = "") -> QCheckBox:
+        cb = QCheckBox(label)
+        cb.setChecked(checked)
+        cb.setStyleSheet(f"QCheckBox{{color:{self._C_TEXT};spacing:6px;}}"
+                         f"QCheckBox::indicator{{width:15px;height:15px;border-radius:3px;"
+                         f"border:1px solid {self._C_SURFACE};background:#11111b;}}"
+                         f"QCheckBox::indicator:checked{{background:{self._C_BLUE};border-color:{self._C_BLUE};}}")
+        if hint:
+            cb.setToolTip(hint)
+        return cb
+
+    def _action_btn(self, label: str, primary: bool = False) -> QPushButton:
+        btn = QPushButton(label)
+        if primary:
+            btn.setStyleSheet(
+                f"QPushButton{{background:{self._C_BLUE};color:#1e1e2e;font-weight:bold;"
+                f"border:none;border-radius:5px;padding:5px 14px;}}"
+                f"QPushButton:hover{{background:#b4c9fc;}}"
+                f"QPushButton:disabled{{background:{self._C_OVERLAY};color:{self._C_MUTED};}}"
+            )
+        else:
+            btn.setStyleSheet(
+                f"QPushButton{{background:{self._C_SURFACE};color:{self._C_TEXT};"
+                f"border:none;border-radius:5px;padding:5px 14px;}}"
+                f"QPushButton:hover{{background:{self._C_OVERLAY};}}"
+                f"QPushButton:disabled{{color:{self._C_MUTED};}}"
+            )
+        return btn
+
+    def _status_badge(self, text: str, color: str) -> QLabel:
+        lbl = QLabel(f"● {text}")
+        lbl.setStyleSheet(f"color:{color};font-weight:bold;font-size:12px;")
+        return lbl
+
+    # ── pages ───────────────────────────────────────────────────────────────
+
+    def _page_engine(self) -> QWidget:
+        inner  = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(0)
+
+        # Execution
+        layout.addWidget(self._section_header("Ausführung"))
 
         self._mode = QComboBox()
         self._mode.addItems(["distrobox", "direct", "toolbox", "custom"])
         self._mode.setCurrentText(self.cfg.mode)
+        self._mode.setStyleSheet(
+            f"QComboBox{{background:#11111b;border:1px solid {self._C_SURFACE};"
+            f"border-radius:5px;padding:5px 8px;color:{self._C_TEXT};}}"
+            f"QComboBox::drop-down{{border:none;width:20px;}}"
+            f"QComboBox QAbstractItemView{{background:#181825;border:1px solid {self._C_SURFACE};"
+            f"selection-background-color:{self._C_SURFACE};}}"
+        )
         self._mode.currentTextChanged.connect(self._update_mode_vis)
-        form.addRow("Ausführungsmodus:", self._mode)
+        self._field(layout, "Ausführungsmodus", self._mode)
 
-        self._container = QLineEdit(self.cfg.container)
-        form.addRow("Container-Name:", self._container)
+        self._container = self._input(self.cfg.container)
+        self._field(layout, "Container-Name", self._container,
+                    "Nur für distrobox / toolbox relevant")
 
-        bin_row = QHBoxLayout()
-        self._binary = QLineEdit(self.cfg.binary)
-        b1 = QPushButton("…")
-        b1.setFixedWidth(30)
+        bin_row = QWidget()
+        br      = QHBoxLayout(bin_row)
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(6)
+        self._binary = self._input(self.cfg.binary)
+        b1 = self._action_btn("…")
+        b1.setFixedWidth(32)
         b1.clicked.connect(lambda: self._browse_file(self._binary))
-        bin_row.addWidget(self._binary)
-        bin_row.addWidget(b1)
-        form.addRow("Binary-Pfad:", bin_row)
+        br.addWidget(self._binary)
+        br.addWidget(b1)
+        self._field(layout, "Binary-Pfad", bin_row)
 
-        ast_row = QHBoxLayout()
-        self._assets = QLineEdit(self.cfg.assets_dir)
-        b2 = QPushButton("…")
-        b2.setFixedWidth(30)
+        ast_row = QWidget()
+        ar      = QHBoxLayout(ast_row)
+        ar.setContentsMargins(0, 0, 0, 0)
+        ar.setSpacing(6)
+        self._assets = self._input(self.cfg.assets_dir)
+        b2 = self._action_btn("…")
+        b2.setFixedWidth(32)
         b2.clicked.connect(lambda: self._browse_dir(self._assets))
-        ast_row.addWidget(self._assets)
-        ast_row.addWidget(b2)
-        form.addRow("Assets-Verzeichnis:", ast_row)
+        ar.addWidget(self._assets)
+        ar.addWidget(b2)
+        self._field(layout, "Assets-Verzeichnis", ast_row)
 
-        self._custom_prefix = QLineEdit(self.cfg.custom_prefix)
-        form.addRow("Custom Prefix:", self._custom_prefix)
+        self._custom_prefix = self._input(self.cfg.custom_prefix)
+        self._field(layout, "Custom Prefix", self._custom_prefix,
+                    "Nur für Modus 'custom' — Präfix vor dem Binary-Aufruf")
 
-        key_row = QHBoxLayout()
-        self._steam_key = QLineEdit(self.cfg.steam_api_key)
-        self._steam_key.setPlaceholderText("Optional — verbessert Rate-Limiting beim Laden des Verfügbar-Tabs")
-        self._steam_key.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
-        key_link = QLabel('<a href="https://steamcommunity.com/dev/apikey">Key holen</a>')
-        key_link.setOpenExternalLinks(True)
-        key_row.addWidget(self._steam_key)
-        key_row.addWidget(key_link)
-        form.addRow("Steam API-Key:", key_row)
-
-        test_row = QHBoxLayout()
-        self._test_btn = QPushButton("Binary testen")
+        # Test row
+        test_row = QWidget()
+        tr       = QHBoxLayout(test_row)
+        tr.setContentsMargins(0, 0, 0, 0)
+        tr.setSpacing(8)
+        self._test_btn = self._action_btn("Binary testen")
         self._test_btn.clicked.connect(self._test_binary)
         self._test_out = QLabel("")
         self._test_out.setWordWrap(True)
-        test_row.addWidget(self._test_btn)
-        test_row.addWidget(self._test_out, stretch=1)
-        form.addRow("", test_row)
+        tr.addWidget(self._test_btn)
+        tr.addWidget(self._test_out, stretch=1)
+        layout.addWidget(test_row)
+        layout.addSpacing(16)
 
+        # Steam
+        layout.addWidget(self._section_header("Steam"))
+        key_row = QWidget()
+        kr      = QHBoxLayout(key_row)
+        kr.setContentsMargins(0, 0, 0, 0)
+        kr.setSpacing(6)
+        self._steam_key = self._input(self.cfg.steam_api_key,
+                                      "Optional — verbessert Rate-Limiting beim Laden des Verfügbar-Tabs")
+        self._steam_key.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        key_link = QLabel(f'<a href="https://steamcommunity.com/dev/apikey" '
+                          f'style="color:{self._C_BLUE}">Key holen ↗</a>')
+        key_link.setOpenExternalLinks(True)
+        kr.addWidget(self._steam_key)
+        kr.addWidget(key_link)
+        self._field(layout, "Steam API-Key", key_row)
+
+        # Performance
+        layout.addWidget(self._section_header("Performance"))
+        self._disable_particles   = self._checkbox("Partikel deaktivieren",    self.cfg.disable_particles,
+                                                   "Reduziert CPU bei partikelreichen Wallpapers")
+        self._disable_mouse       = self._checkbox("Maus-Interaktion deaktivieren", self.cfg.disable_mouse,
+                                                   "Kleiner CPU-Vorteil, deaktiviert Maus-Reaktion")
+        self._no_audio_processing = self._checkbox("Audio-Verarbeitung deaktivieren", self.cfg.no_audio_processing,
+                                                   "Deaktiviert audio-reaktive Effekte")
+        for cb in (self._disable_particles, self._disable_mouse, self._no_audio_processing):
+            layout.addWidget(cb)
+            layout.addSpacing(4)
+
+        layout.addStretch()
         self._update_mode_vis(self.cfg.mode)
-        return w
+        return self._scrollable(inner)
+
+    def _page_service(self) -> QWidget:
+        inner  = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(0)
+
+        layout.addWidget(self._section_header("Status"))
+
+        status_row = QWidget()
+        sr         = QHBoxLayout(status_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(12)
+        self._svc_status = QLabel("…")
+        self._svc_status.setStyleSheet(f"color:{self._C_TEXT};font-weight:bold;font-size:13px;")
+        sr.addWidget(self._svc_status)
+        sr.addStretch()
+        self._autostart = self._checkbox("Mit Sitzung starten (systemd enable)", self._is_enabled())
+        self._autostart.toggled.connect(self._toggle_autostart)
+        sr.addWidget(self._autostart)
+        layout.addWidget(status_row)
+        layout.addSpacing(12)
+
+        layout.addWidget(self._section_header("Steuerung"))
+
+        ctrl_row = QWidget()
+        cr       = QHBoxLayout(ctrl_row)
+        cr.setContentsMargins(0, 0, 0, 0)
+        cr.setSpacing(8)
+        for label, action in [("▶  Start", "start"), ("■  Stop", "stop"), ("↺  Restart", "restart")]:
+            btn = self._action_btn(label)
+            btn.clicked.connect(lambda _, a=action: self._svc_action(a))
+            cr.addWidget(btn)
+        cr.addStretch()
+        layout.addWidget(ctrl_row)
+        layout.addSpacing(16)
+
+        layout.addWidget(self._section_header("Log"))
+        self._log_view = QTextEdit()
+        self._log_view.setReadOnly(True)
+        self._log_view.setFont(QFont("Monospace", 9))
+        self._log_view.setStyleSheet(
+            f"QTextEdit{{background:#11111b;border:1px solid {self._C_SURFACE};"
+            f"border-radius:5px;color:{self._C_TEXT};padding:4px;}}"
+        )
+        layout.addWidget(self._log_view, stretch=1)
+        return inner
+
+    def _page_updates(self) -> QWidget:
+        inner  = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(0)
+
+        # wallpaper-picker
+        layout.addWidget(self._section_header("wallpaper-picker"))
+
+        self._update_url = self._input(
+            self.cfg.update_url,
+            "https://raw.githubusercontent.com/USER/REPO/main/wallpaper_picker/__init__.py"
+        )
+        self._field(layout, "Update-URL", self._update_url,
+                    "Raw-URL zur wallpaper_picker/__init__.py auf GitHub")
+
+        ver_row = QWidget()
+        vr      = QHBoxLayout(ver_row)
+        vr.setContentsMargins(0, 0, 0, 0)
+        vr.setSpacing(8)
+        ver_lbl = QLabel(f"Installiert: <b style='color:{self._C_BLUE}'>{__version__}</b>")
+        ver_lbl.setStyleSheet(f"color:{self._C_TEXT};")
+        self._check_btn = self._action_btn("Jetzt prüfen")
+        self._check_btn.clicked.connect(self._check_update)
+        self._check_result = QLabel("")
+        self._check_result.setStyleSheet(f"color:{self._C_SUBTEXT};")
+        vr.addWidget(ver_lbl)
+        vr.addWidget(self._check_btn)
+        vr.addWidget(self._check_result, stretch=1)
+        layout.addWidget(ver_row)
+        layout.addSpacing(8)
+
+        self._fullscreen_pause = self._checkbox(
+            "Wallpaper bei Vollbild-Apps automatisch pausieren",
+            getattr(self.cfg, "fullscreen_pause", True),
+            "Nutzt --fullscreen-pause-only-active der Engine (kein Neustart nötig)"
+        )
+        layout.addWidget(self._fullscreen_pause)
+        layout.addSpacing(16)
+
+        # linux-wallpaperengine
+        layout.addWidget(self._section_header("linux-wallpaperengine"))
+
+        lwe_grid = QWidget()
+        gl       = QGridLayout(lwe_grid)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setColumnStretch(1, 1)
+        gl.setVerticalSpacing(6)
+
+        def _lbl(text):
+            l = QLabel(text)
+            l.setStyleSheet(f"color:{self._C_SUBTEXT};font-size:11px;")
+            return l
+
+        self._lwe_local_lbl  = QLabel("…")
+        self._lwe_remote_lbl = QLabel("…")
+        self._lwe_upd_lbl    = QLabel("…")
+        self._lwe_compat_lbl = QLabel("…")
+        for w in (self._lwe_local_lbl, self._lwe_remote_lbl,
+                  self._lwe_upd_lbl, self._lwe_compat_lbl):
+            w.setStyleSheet(f"color:{self._C_TEXT};")
+
+        gl.addWidget(_lbl("Installiert:"), 0, 0); gl.addWidget(self._lwe_local_lbl,  0, 1)
+        gl.addWidget(_lbl("Verfügbar:"),   1, 0); gl.addWidget(self._lwe_remote_lbl, 1, 1)
+        gl.addWidget(_lbl("Update:"),      2, 0); gl.addWidget(self._lwe_upd_lbl,    2, 1)
+        gl.addWidget(_lbl("Kompatibel:"),  3, 0); gl.addWidget(self._lwe_compat_lbl, 3, 1)
+        layout.addWidget(lwe_grid)
+        layout.addSpacing(10)
+
+        lwe_btns = QWidget()
+        lb       = QHBoxLayout(lwe_btns)
+        lb.setContentsMargins(0, 0, 0, 0)
+        lb.setSpacing(8)
+        self._lwe_check_btn = self._action_btn("Status prüfen")
+        self._lwe_check_btn.clicked.connect(self._check_lwe_status)
+        self._lwe_btn = self._action_btn("Aktualisieren", primary=True)
+        self._lwe_btn.clicked.connect(self._update_lwe)
+        self._lwe_btn.setEnabled(False)
+        lb.addWidget(self._lwe_check_btn)
+        lb.addWidget(self._lwe_btn)
+        lb.addStretch()
+        layout.addWidget(lwe_btns)
+
+        self._lwe_log = QTextEdit()
+        self._lwe_log.setReadOnly(True)
+        self._lwe_log.setFont(QFont("Monospace", 9))
+        self._lwe_log.setFixedHeight(110)
+        self._lwe_log.setStyleSheet(
+            f"QTextEdit{{background:#11111b;border:1px solid {self._C_SURFACE};"
+            f"border-radius:5px;color:{self._C_TEXT};padding:4px;margin-top:8px;}}"
+        )
+        self._lwe_log.hide()
+        layout.addWidget(self._lwe_log)
+        layout.addStretch()
+        return self._scrollable(inner)
+
+    def _page_info(self) -> QWidget:
+        inner  = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(0)
+
+        layout.addWidget(self._section_header("System"))
+
+        ptype = "Atomic (Immutable)" if IS_ATOMIC else "Traditionell"
+        b_ok  = bool(self.cfg.binary) and Path(self.cfg.binary).exists()
+        a_ok  = bool(self.cfg.assets_dir) and Path(self.cfg.assets_dir).is_dir()
+        from ..constants import WORKSHOP_DIR
+        wp_count = len(list(WORKSHOP_DIR.iterdir())) if WORKSHOP_DIR.exists() else 0
+
+        info_rows = [
+            ("Distro",    f"{DISTRO_NAME} ({ptype})", None),
+            ("Binary",    self.cfg.binary or "nicht konfiguriert", b_ok),
+            ("Assets",    self.cfg.assets_dir or "nicht konfiguriert", a_ok),
+            ("Workshop",  f"{wp_count} Wallpapers lokal", None),
+        ]
+        grid_w = QWidget()
+        gl     = QGridLayout(grid_w)
+        gl.setContentsMargins(0, 4, 0, 4)
+        gl.setColumnStretch(1, 1)
+        gl.setVerticalSpacing(8)
+        for i, (lbl, val, ok) in enumerate(info_rows):
+            l = QLabel(lbl)
+            l.setStyleSheet(f"color:{self._C_SUBTEXT};font-size:11px;")
+            v = QLabel(val)
+            v.setStyleSheet(f"color:{self._C_TEXT};font-size:11px;")
+            v.setWordWrap(True)
+            gl.addWidget(l, i, 0)
+            gl.addWidget(v, i, 1)
+            if ok is not None:
+                ind = QLabel("✓" if ok else "✗")
+                ind.setStyleSheet(f"color:{self._C_GREEN if ok else self._C_RED};font-weight:bold;")
+                gl.addWidget(ind, i, 2)
+        layout.addWidget(grid_w)
+        layout.addSpacing(8)
+
+        layout.addWidget(self._section_header("Setup-Guide"))
+
+        guide = QTextEdit()
+        guide.setReadOnly(True)
+        guide.setFont(QFont("Monospace", 9))
+        guide.setPlainText(self._guide())
+        guide.setStyleSheet(
+            f"QTextEdit{{background:#11111b;border:1px solid {self._C_SURFACE};"
+            f"border-radius:5px;color:{self._C_TEXT};padding:8px;}}"
+        )
+        layout.addWidget(guide, stretch=1)
+        return inner
+
+    # ── logic (unchanged) ───────────────────────────────────────────────────
 
     def _update_mode_vis(self, mode: str):
         self._container.setEnabled(mode in ("distrobox", "toolbox"))
@@ -260,57 +794,16 @@ class SettingsDialog(QDialog):
 
     def _on_test(self, ok: bool, msg: str):
         self._test_btn.setEnabled(True)
-        c     = "#4caf50" if ok else "#f44336"
-        label = "OK" if ok else "FEHLER"
+        c, label = (self._C_GREEN, "✓ OK") if ok else (self._C_RED, "✗ Fehler")
         self._test_out.setText(f'<span style="color:{c}">{label}</span>')
         self._test_out.setToolTip(msg)
-
-    def _service_tab(self) -> QWidget:
-        w      = QWidget()
-        layout = QVBoxLayout(w)
-
-        status_row = QHBoxLayout()
-        self._svc_status = QLabel("…")
-        self._svc_status.setStyleSheet("font-weight:bold;")
-        status_row.addWidget(QLabel("Status:"))
-        status_row.addWidget(self._svc_status)
-        status_row.addStretch()
-        layout.addLayout(status_row)
-
-        btn_row = QHBoxLayout()
-        for label, action in [("Start", "start"), ("Stop", "stop"), ("Restart", "restart")]:
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _, a=action: self._svc_action(a))
-            btn_row.addWidget(btn)
-        layout.addLayout(btn_row)
-
-        self._autostart = QCheckBox("Autostart aktivieren (systemd enable)")
-        self._autostart.setChecked(self._is_enabled())
-        self._autostart.toggled.connect(self._toggle_autostart)
-        layout.addWidget(self._autostart)
-
-        layout.addWidget(QLabel("Log (letzte 40 Zeilen):"))
-        self._log_view = QTextEdit()
-        self._log_view.setReadOnly(True)
-        self._log_view.setFont(QFont("Monospace", 9))
-        layout.addWidget(self._log_view, stretch=1)
-
-        return w
-
-    def _on_tab(self, idx: int):
-        if idx == 1:
-            self._refresh_status()
-            self._refresh_log()
-            self._log_timer.start(3000)
-        else:
-            self._log_timer.stop()
 
     def _refresh_status(self):
         r = subprocess.run(["systemctl", "--user", "is-active", self.cfg.service_name],
                            capture_output=True, text=True, timeout=3)
         s = r.stdout.strip()
-        c = "#4caf50" if s == "active" else "#f44336"
-        self._svc_status.setText(f'<span style="color:{c}">{s}</span>')
+        c = self._C_GREEN if s == "active" else self._C_RED
+        self._svc_status.setText(f'<span style="color:{c}">● {s}</span>')
 
     def _refresh_log(self):
         self._refresh_status()
@@ -338,73 +831,6 @@ class SettingsDialog(QDialog):
             capture_output=True, timeout=5,
         )
 
-    def _updates_tab(self) -> QWidget:
-        w      = QWidget()
-        layout = QVBoxLayout(w)
-
-        app_box  = QGroupBox("App-Update (wallpaper-picker)")
-        app_form = QFormLayout(app_box)
-
-        self._update_url = QLineEdit(self.cfg.update_url)
-        self._update_url.setPlaceholderText(
-            "https://raw.githubusercontent.com/USER/REPO/main/wallpaper_picker/__init__.py"
-        )
-        app_form.addRow("Update-URL:", self._update_url)
-
-        ver_row = QHBoxLayout()
-        self._ver_label   = QLabel(f"Installiert: <b>{__version__}</b>")
-        self._check_btn   = QPushButton("Jetzt prüfen")
-        self._check_btn.clicked.connect(self._check_update)
-        self._check_result = QLabel("")
-        ver_row.addWidget(self._ver_label)
-        ver_row.addWidget(self._check_btn)
-        ver_row.addWidget(self._check_result, stretch=1)
-        app_form.addRow("", ver_row)
-
-        layout.addWidget(app_box)
-
-        lwe_box    = QGroupBox("linux-wallpaperengine")
-        lwe_layout = QVBoxLayout(lwe_box)
-
-        grid = QGridLayout()
-        grid.setColumnStretch(1, 1)
-        self._lwe_local_lbl  = QLabel("…")
-        self._lwe_remote_lbl = QLabel("…")
-        self._lwe_compat_lbl = QLabel("…")
-        self._lwe_upd_lbl    = QLabel("…")
-        grid.addWidget(QLabel("Installiert:"),  0, 0); grid.addWidget(self._lwe_local_lbl,  0, 1)
-        grid.addWidget(QLabel("Verfügbar:"),    1, 0); grid.addWidget(self._lwe_remote_lbl, 1, 1)
-        grid.addWidget(QLabel("Update:"),       2, 0); grid.addWidget(self._lwe_upd_lbl,    2, 1)
-        grid.addWidget(QLabel("Kompatibel:"),   3, 0); grid.addWidget(self._lwe_compat_lbl, 3, 1)
-        lwe_layout.addLayout(grid)
-
-        btn_row = QHBoxLayout()
-        self._lwe_check_btn = QPushButton("Status prüfen")
-        self._lwe_check_btn.clicked.connect(self._check_lwe_status)
-        self._lwe_btn = QPushButton("Aktualisieren")
-        self._lwe_btn.clicked.connect(self._update_lwe)
-        self._lwe_btn.setEnabled(False)
-        btn_row.addWidget(self._lwe_check_btn)
-        btn_row.addWidget(self._lwe_btn)
-        btn_row.addStretch()
-        lwe_layout.addLayout(btn_row)
-
-        self._lwe_log = QTextEdit()
-        self._lwe_log.setReadOnly(True)
-        self._lwe_log.setFont(QFont("Monospace", 9))
-        self._lwe_log.setFixedHeight(120)
-        self._lwe_log.hide()
-        lwe_layout.addWidget(self._lwe_log)
-
-        layout.addWidget(lwe_box)
-        self._lwe_checker: Optional[LWEVersionChecker] = None
-
-        layout.addWidget(QLabel(
-            "<small>Update-URL: Raw-URL zur wallpaper_picker/__init__.py auf GitHub.</small>"
-        ))
-        layout.addStretch()
-        return w
-
     def _check_update(self):
         url = self._update_url.text().strip()
         if not url:
@@ -414,19 +840,19 @@ class SettingsDialog(QDialog):
         self._check_result.setText("Prüfe…")
         self._update_checker = UpdateChecker(url)
         self._update_checker.update_available.connect(self._on_update_found)
-        self._update_checker.up_to_date.connect(lambda v: self._on_check_done(True, f"Bereits aktuell (v{v}) ✓"))
+        self._update_checker.up_to_date.connect(lambda v: self._on_check_done(True, f"Aktuell (v{v}) ✓"))
         self._update_checker.check_failed.connect(lambda e: self._on_check_done(False, e))
         self._update_checker.start()
 
     def _on_update_found(self, remote: str, changelog: dict):
         self._check_btn.setEnabled(True)
-        self._check_result.setText(f'<span style="color:#89b4fa">v{remote} verfügbar</span>')
+        self._check_result.setText(f'<span style="color:{self._C_BLUE}">v{remote} verfügbar</span>')
         dlg = UpdateDialog(__version__, remote, changelog, self)
         dlg.exec()
 
     def _on_check_done(self, ok: bool, msg: str):
         self._check_btn.setEnabled(True)
-        c = "#4caf50" if ok else "#f44336"
+        c = self._C_GREEN if ok else self._C_RED
         self._check_result.setText(f'<span style="color:{c}">{msg}</span>')
 
     def _update_lwe(self):
@@ -457,77 +883,39 @@ class SettingsDialog(QDialog):
 
     def _on_lwe_status(self, status: LWEStatus):
         self._lwe_check_btn.setEnabled(True)
-
         if status.local_commit:
-            self._lwe_local_lbl.setText(f"<code>{status.local_commit}</code>  ({status.local_date})")
+            self._lwe_local_lbl.setText(
+                f"<code>{status.local_commit}</code>"
+                f"<span style='color:{self._C_MUTED}'> ({status.local_date})</span>"
+            )
         else:
-            self._lwe_local_lbl.setText('<span style="color:#f38ba8">nicht gefunden</span>')
-
+            self._lwe_local_lbl.setText(f'<span style="color:{self._C_RED}">nicht gefunden</span>')
         if status.remote_commit != "?":
-            self._lwe_remote_lbl.setText(f"<code>{status.remote_commit}</code>  ({status.remote_date})")
+            self._lwe_remote_lbl.setText(
+                f"<code>{status.remote_commit}</code>"
+                f"<span style='color:{self._C_MUTED}'> ({status.remote_date})</span>"
+            )
         else:
-            self._lwe_remote_lbl.setText('<span style="color:#888">nicht erreichbar</span>')
-
+            self._lwe_remote_lbl.setText(f'<span style="color:{self._C_MUTED}">nicht erreichbar</span>')
         if status.remote_commit == "?":
-            self._lwe_upd_lbl.setText('<span style="color:#888">unbekannt</span>')
+            self._lwe_upd_lbl.setText(f'<span style="color:{self._C_MUTED}">unbekannt</span>')
             self._lwe_btn.setEnabled(False)
         elif status.up_to_date:
-            self._lwe_upd_lbl.setText('<span style="color:#a6e3a1">✓ Aktuell</span>')
+            self._lwe_upd_lbl.setText(f'<span style="color:{self._C_GREEN}">✓ Aktuell</span>')
             self._lwe_btn.setEnabled(False)
         else:
             self._lwe_upd_lbl.setText(
-                f'<span style="color:#89b4fa">Update verfügbar → {status.remote_commit} ({status.remote_date})</span>'
+                f'<span style="color:{self._C_BLUE}">↑ Update verfügbar → '
+                f'{status.remote_commit} ({status.remote_date})</span>'
             )
             self._lwe_btn.setEnabled(True)
-
         if status.compatible:
-            self._lwe_compat_lbl.setText('<span style="color:#a6e3a1">✓ Kompatibel</span>')
+            self._lwe_compat_lbl.setText(f'<span style="color:{self._C_GREEN}">✓ Kompatibel</span>')
         else:
             missing = ", ".join(status.missing_flags)
-            self._lwe_compat_lbl.setText(f'<span style="color:#f38ba8">✗ Inkompatibel: {missing}</span>')
-
-    def _info_tab(self) -> QWidget:
-        w      = QWidget()
-        layout = QVBoxLayout(w)
-
-        ptype = "Atomic (Immutable)" if IS_ATOMIC else "Traditionell"
-        layout.addWidget(self._info_row("Distro:", f"{DISTRO_NAME} ({ptype})"))
-
-        b_ok = bool(self.cfg.binary) and Path(self.cfg.binary).exists()
-        layout.addWidget(self._info_row("Binary:", self.cfg.binary or "nicht konfiguriert", ok=b_ok))
-
-        a_ok = bool(self.cfg.assets_dir) and Path(self.cfg.assets_dir).is_dir()
-        layout.addWidget(self._info_row("Assets:", self.cfg.assets_dir or "nicht konfiguriert", ok=a_ok))
-
-        from ..constants import WORKSHOP_DIR
-        wp_count = len(list(WORKSHOP_DIR.iterdir())) if WORKSHOP_DIR.exists() else 0
-        layout.addWidget(self._info_row("Workshop:", f"{wp_count} Wallpapers lokal"))
-
-        layout.addWidget(QLabel(""))
-        layout.addWidget(QLabel("<b>Setup-Guide für dieses System:</b>"))
-
-        guide = QTextEdit()
-        guide.setReadOnly(True)
-        guide.setFont(QFont("Monospace", 9))
-        guide.setPlainText(self._guide())
-        layout.addWidget(guide, stretch=1)
-        return w
-
-    def _info_row(self, label: str, value: str, ok: Optional[bool] = None) -> QWidget:
-        w   = QWidget()
-        row = QHBoxLayout(w)
-        row.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel(label)
-        lbl.setFixedWidth(80)
-        val = QLabel(value)
-        val.setWordWrap(True)
-        row.addWidget(lbl)
-        row.addWidget(val, stretch=1)
-        if ok is not None:
-            ind = QLabel("✓" if ok else "✗")
-            ind.setStyleSheet(f"color:{'#4caf50' if ok else '#f44336'}; font-weight:bold;")
-            row.addWidget(ind)
-        return w
+            self._lwe_compat_lbl.setText(
+                f'<span style="color:{self._C_RED}">✗ Inkompatibel: {missing}</span>'
+            )
 
     def _guide(self) -> str:
         lines = []
@@ -564,13 +952,17 @@ class SettingsDialog(QDialog):
         return "\n".join(lines)
 
     def _save(self):
-        self.cfg.mode          = self._mode.currentText()
-        self.cfg.container     = self._container.text().strip()
-        self.cfg.binary        = self._binary.text().strip()
-        self.cfg.assets_dir    = self._assets.text().strip()
-        self.cfg.custom_prefix = self._custom_prefix.text().strip()
-        self.cfg.steam_api_key = self._steam_key.text().strip()
-        self.cfg.update_url    = self._update_url.text().strip()
+        self.cfg.mode             = self._mode.currentText()
+        self.cfg.container        = self._container.text().strip()
+        self.cfg.binary           = self._binary.text().strip()
+        self.cfg.assets_dir       = self._assets.text().strip()
+        self.cfg.custom_prefix    = self._custom_prefix.text().strip()
+        self.cfg.steam_api_key    = self._steam_key.text().strip()
+        self.cfg.update_url          = self._update_url.text().strip()
+        self.cfg.fullscreen_pause    = self._fullscreen_pause.isChecked()
+        self.cfg.disable_particles   = self._disable_particles.isChecked()
+        self.cfg.disable_mouse       = self._disable_mouse.isChecked()
+        self.cfg.no_audio_processing = self._no_audio_processing.isChecked()
         self.cfg.save()
         self.saved.emit()
         self.accept()

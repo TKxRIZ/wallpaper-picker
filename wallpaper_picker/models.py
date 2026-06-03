@@ -1,7 +1,44 @@
+import dataclasses
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+_WP_CONFIGS_DIR = Path.home() / ".config/wallpaper-picker/wallpaper-configs"
+
+
+@dataclass
+class WallpaperConfig:
+    """Per-wallpaper overrides. None = fall back to global config."""
+    fps:                  Optional[int]  = None
+    fullscreen_pause:     Optional[bool] = None
+    disable_particles:    Optional[bool] = None
+    disable_mouse:        Optional[bool] = None
+    no_audio_processing:  Optional[bool] = None
+
+    def is_customized(self) -> bool:
+        return any(v is not None for v in dataclasses.asdict(self).values())
+
+    def save(self, wp_id: str) -> None:
+        _WP_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+        data = {k: v for k, v in dataclasses.asdict(self).items() if v is not None}
+        (_WP_CONFIGS_DIR / f"{wp_id}.json").write_text(json.dumps(data, indent=2))
+
+    def delete(self, wp_id: str) -> None:
+        p = _WP_CONFIGS_DIR / f"{wp_id}.json"
+        p.unlink(missing_ok=True)
+
+    @classmethod
+    def load(cls, wp_id: str) -> "WallpaperConfig":
+        p = _WP_CONFIGS_DIR / f"{wp_id}.json"
+        if not p.exists():
+            return cls()
+        try:
+            data = json.loads(p.read_text())
+            valid = {f.name for f in dataclasses.fields(cls)}
+            return cls(**{k: v for k, v in data.items() if k in valid})
+        except Exception:
+            return cls()
 
 
 @dataclass

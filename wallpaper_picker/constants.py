@@ -7,6 +7,7 @@ WORKSHOP_DIR = Path.home() / ".local/share/Steam/steamapps/workshop/content/4319
 ACF_FILE     = Path.home() / ".local/share/Steam/steamapps/workshop/appworkshop_431960.acf"
 SERVICE_FILE = Path.home() / ".config/systemd/user/linux-wallpaperengine.service"
 CONFIG_PATH  = Path.home() / ".config/wallpaper-picker/config.json"
+UPDATE_STATE_PATH = Path.home() / ".cache/wallpaper-picker/update-state.json"
 STEAM_API    = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
 
 CARD_W, CARD_H   = 204, 168

@@ -11,9 +11,11 @@ from ..models import Wallpaper, MonitorConfig
 
 class UpdateBanner(QFrame):
     show_dialog = Signal()
+    dismissed   = Signal(str)  # emits the version that was dismissed
 
     def __init__(self, remote_version: str, parent=None):
         super().__init__(parent)
+        self._version = remote_version
         self.setStyleSheet("UpdateBanner{background:#1e3a5f;border-radius:6px;margin:4px 4px 0 4px;}")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
@@ -33,12 +35,16 @@ class UpdateBanner(QFrame):
         dismiss_btn = QPushButton("✕")
         dismiss_btn.setFixedSize(24, 24)
         dismiss_btn.setStyleSheet("background:transparent;color:#585b70;font-size:12px;")
-        dismiss_btn.clicked.connect(self.hide)
+        dismiss_btn.clicked.connect(self._dismiss)
 
         layout.addWidget(icon)
         layout.addWidget(msg, stretch=1)
         layout.addWidget(update_btn)
         layout.addWidget(dismiss_btn)
+
+    def _dismiss(self):
+        self.dismissed.emit(self._version)
+        self.hide()
 
 
 class SetupBanner(QFrame):
