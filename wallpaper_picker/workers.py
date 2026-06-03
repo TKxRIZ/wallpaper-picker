@@ -212,22 +212,43 @@ class AppUpdateWorker(QThread):
     output_line = Signal(str)
     done        = Signal(bool, str)
 
-    def run(self):
-        self.output_line.emit(f"▶ git pull — {PROJECT_DIR}")
+    def _run_step(self, label: str, cmd: list[str]) -> bool:
+        self.output_line.emit(f"▶ {label}")
         try:
             proc = subprocess.Popen(
-                ["git", "-C", str(PROJECT_DIR), "pull", "--ff-only"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             )
             for line in proc.stdout:  # type: ignore
-                self.output_line.emit(line.rstrip())
+                self.output_line.emit(f"  {line.rstrip()}")
             proc.wait()
-            if proc.returncode == 0:
-                self.done.emit(True, "Update erfolgreich.")
-            else:
-                self.done.emit(False, f"git pull fehlgeschlagen (exit {proc.returncode})")
+            return proc.returncode == 0
         except Exception as e:
-            self.done.emit(False, str(e))
+            self.output_line.emit(f"  Fehler: {e}")
+            return False
+
+    def run(self):
+        self.output_line.emit(f"Repo: {PROJECT_DIR}")
+
+        # Fetch remote state
+        if not self._run_step("git fetch origin", ["git", "-C", str(PROJECT_DIR), "fetch", "origin"]):
+            self.done.emit(False, "Fetch fehlgeschlagen — Internetverbindung prüfen.")
+            return
+
+        # Hard reset to origin/main — reliable regardless of local state
+        if not self._run_step(
+            "git reset --hard origin/main",
+            ["git", "-C", str(PROJECT_DIR), "reset", "--hard", "origin/main"],
+        ):
+            self.done.emit(False, "Reset fehlgeschlagen.")
+            return
+
+        # Re-run install.sh to update launcher + desktop files + tray binary
+        install_sh = PROJECT_DIR / "install.sh"
+        if install_sh.exists():
+            self._run_step("install.sh (Launcher + Tray aktualisieren)",
+                           ["bash", str(install_sh)])
+
+        self.done.emit(True, "Update erfolgreich — App wird neu gestartet.")
 
 
 class UpdateChecker(QThread):
