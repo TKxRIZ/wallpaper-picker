@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from ..config import Config, validate_setup
 from ..constants import IS_ATOMIC, DISTRO_NAME
+from ..i18n import t
 from .dialogs import BuildDialog
 
 PAGE_WELCOME = 0
@@ -23,26 +24,17 @@ class WelcomePage(QWizardPage):
     def __init__(self, cfg: Config):
         super().__init__()
         self._cfg = cfg
-        self.setTitle("Willkommen")
-        self.setSubTitle("Einrichtungs-Assistent für linux-wallpaperengine")
+        self.setTitle(t("wiz_welcome_title"))
+        self.setSubTitle(t("wiz_welcome_sub"))
 
         layout = QVBoxLayout(self)
-        ptype  = "Atomic (Immutable)" if IS_ATOMIC else "Traditionell"
-        info   = QLabel(
-            f"<b>System:</b> {DISTRO_NAME} — {ptype}<br><br>"
-            "Dieser Assistent führt dich durch die Einrichtung von<br>"
-            "<b>linux-wallpaperengine</b> — einer Open-Source-Implementierung<br>"
-            "der Wallpaper Engine für Linux.<br><br>"
-            "Du benötigst:<br>"
-            "• linux-wallpaperengine Binary (bereits gebaut oder jetzt bauen)<br>"
-            "• Wallpaper Engine Assets (aus Steam)<br>"
-            "• Mindestens ein abonniertes Wallpaper"
-        )
+        ptype  = t("info_atomic") if IS_ATOMIC else t("info_traditional")
+        info   = QLabel(t("wiz_welcome_body", distro=DISTRO_NAME, ptype=ptype))
         info.setWordWrap(True)
         layout.addWidget(info)
 
         if not validate_setup(cfg):
-            ok = QLabel("✓ Setup bereits vollständig konfiguriert!")
+            ok = QLabel(t("wiz_already_ok"))
             ok.setStyleSheet("color:#4caf50; font-weight:bold; padding-top:12px;")
             layout.addWidget(ok)
 
@@ -53,17 +45,17 @@ class ModePage(QWizardPage):
     def __init__(self, cfg: Config):
         super().__init__()
         self._cfg = cfg
-        self.setTitle("Ausführungsmodus")
-        self.setSubTitle("Wie soll linux-wallpaperengine gestartet werden?")
+        self.setTitle(t("wiz_mode_title"))
+        self.setSubTitle(t("wiz_mode_sub"))
 
         layout = QFormLayout(self)
 
         self._mode = QComboBox()
         self._mode.currentTextChanged.connect(self._on_mode)
-        layout.addRow("Modus:", self._mode)
+        layout.addRow(t("wiz_mode_label"), self._mode)
 
         self._container = QLineEdit(cfg.container)
-        layout.addRow("Container:", self._container)
+        layout.addRow(t("wiz_container_label"), self._container)
 
         self._desc = QLabel()
         self._desc.setWordWrap(True)
@@ -77,9 +69,11 @@ class ModePage(QWizardPage):
         available = []
         for runtime, mode in [("distrobox", "distrobox"), ("toolbox", "toolbox")]:
             if Path(f"/usr/bin/{runtime}").exists():
-                available.append((f"{mode}  (empfohlen für Atomic)", mode))
-        available += [("direct  (Binary direkt ausführen)", "direct"),
-                      ("custom  (eigener Prefix)", "custom")]
+                available.append((f"{mode}{t('wiz_mode_recommended')}", mode))
+        available += [
+            (t("wiz_mode_direct"), "direct"),
+            (t("wiz_mode_custom"), "custom"),
+        ]
         for label, val in available:
             self._mode.addItem(label, val)
         for i in range(self._mode.count()):
@@ -88,12 +82,12 @@ class ModePage(QWizardPage):
                 break
 
     def _on_mode(self, _):
-        mode  = self._mode.currentData()
+        mode = self._mode.currentData()
         descs = {
-            "distrobox": "Führt die Binary in einem Distrobox-Container aus. Empfohlen für Bazzite/Silverblue.",
-            "toolbox":   "Wie Distrobox, aber mit Toolbox/Toolbx.",
-            "direct":    "Führt die Binary direkt auf dem Host aus. Benötigt alle Libraries auf dem Host.",
-            "custom":    "Benutzerdefinierter Prefix-Befehl vor der Binary.",
+            "distrobox": t("wiz_desc_distrobox"),
+            "toolbox":   t("wiz_desc_toolbox"),
+            "direct":    t("wiz_desc_direct"),
+            "custom":    t("wiz_desc_custom"),
         }
         self._desc.setText(descs.get(mode or "", ""))
         self._container.setEnabled(mode in ("distrobox", "toolbox"))
@@ -105,7 +99,7 @@ class ModePage(QWizardPage):
         mode      = self._mode.currentData()
         container = self._container.text().strip()
         if mode in ("distrobox", "toolbox") and not container:
-            QMessageBox.warning(self, "Fehler", "Container-Name darf nicht leer sein.")
+            QMessageBox.warning(self, t("dlg_setup_incomplete"), t("wiz_err_container"))
             return False
         self._cfg.mode      = mode
         self._cfg.container = container
@@ -118,8 +112,8 @@ class BinaryPage(QWizardPage):
         self._cfg      = cfg
         self._complete = False
         self._test_worker: Optional[object] = None
-        self.setTitle("Binary konfigurieren")
-        self.setSubTitle("Pfad zur linux-wallpaperengine Binary angeben und testen")
+        self.setTitle(t("wiz_binary_title"))
+        self.setSubTitle(t("wiz_binary_sub"))
         self._build_ui()
 
     def _build_ui(self):
@@ -131,7 +125,7 @@ class BinaryPage(QWizardPage):
             "/home/user/wallpaper-picker/linux-wallpaperengine/build/output/linux-wallpaperengine"
         )
         self._path.textChanged.connect(self._on_path_changed)
-        detect_btn = QPushButton("Auto-Detect")
+        detect_btn = QPushButton(t("btn_autodetect"))
         detect_btn.clicked.connect(self._autodetect)
         browse_btn = QPushButton("…")
         browse_btn.setFixedWidth(30)
@@ -142,7 +136,7 @@ class BinaryPage(QWizardPage):
         layout.addLayout(path_row)
 
         test_row = QHBoxLayout()
-        self._test_btn    = QPushButton("Binary testen")
+        self._test_btn    = QPushButton(t("btn_test_binary"))
         self._test_btn.clicked.connect(self._test)
         self._test_result = QLabel("")
         self._test_result.setWordWrap(True)
@@ -156,11 +150,11 @@ class BinaryPage(QWizardPage):
         sep.setStyleSheet("color:#444;")
         layout.addWidget(sep)
 
-        build_lbl = QLabel("<b>Binary nicht gefunden?</b> Direkt hier in einem Distrobox-Container bauen:")
+        build_lbl = QLabel(t("wiz_build_label"))
         build_lbl.setWordWrap(True)
         layout.addWidget(build_lbl)
 
-        self._build_btn = QPushButton("⚙  linux-wallpaperengine jetzt bauen…")
+        self._build_btn = QPushButton(t("btn_build_lwe"))
         self._build_btn.clicked.connect(self._open_build)
         layout.addWidget(self._build_btn)
 
@@ -169,7 +163,7 @@ class BinaryPage(QWizardPage):
     def initializePage(self):
         path = self._path.text().strip()
         if path and Path(path).exists() and os.access(path, os.X_OK):
-            self._set_ok(True, "Binary bereits vorhanden ✓")
+            self._set_ok(True, t("wiz_binary_exists"))
 
     def _autodetect(self):
         tmp = Config(binary="", assets_dir=self._cfg.assets_dir)
@@ -178,10 +172,10 @@ class BinaryPage(QWizardPage):
             self._path.setText(tmp.binary)
             self._test()
         else:
-            self._test_result.setText("Nicht gefunden — bitte manuell angeben oder bauen.")
+            self._test_result.setText(t("wiz_autodetect_fail"))
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Binary wählen")
+        path, _ = QFileDialog.getOpenFileName(self, t("wiz_binary_title"))
         if path:
             self._path.setText(path)
 
@@ -192,10 +186,10 @@ class BinaryPage(QWizardPage):
     def _test(self):
         path = self._path.text().strip()
         if not path:
-            self._test_result.setText("Kein Pfad angegeben.")
+            self._test_result.setText(t("wiz_no_path"))
             return
         self._test_btn.setEnabled(False)
-        self._test_result.setText("Wird getestet…")
+        self._test_result.setText(t("test_running"))
         from ..workers import TestBinaryWorker
         tmp_cfg = Config(mode=self._cfg.mode, container=self._cfg.container, binary=path)
         self._test_worker = TestBinaryWorker(tmp_cfg.test_cmd())
@@ -204,7 +198,7 @@ class BinaryPage(QWizardPage):
 
     def _on_test(self, ok: bool, msg: str):
         self._test_btn.setEnabled(True)
-        self._set_ok(ok, "✓ Binary funktioniert" if ok else f"✗ {msg[:120]}")
+        self._set_ok(ok, t("wiz_test_ok") if ok else t("wiz_test_fail", msg=msg[:120]))
         if ok:
             self._test_result.setToolTip(msg)
 
@@ -236,22 +230,19 @@ class AssetsPage(QWizardPage):
         super().__init__()
         self._cfg      = cfg
         self._complete = False
-        self.setTitle("Assets-Verzeichnis")
-        self.setSubTitle("Pfad zum Wallpaper Engine Assets-Ordner (aus Steam)")
+        self.setTitle(t("wiz_assets_title"))
+        self.setSubTitle(t("wiz_assets_sub"))
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
-            "Das Assets-Verzeichnis befindet sich normalerweise unter:\n"
-            "~/.local/share/Steam/steamapps/common/wallpaper_engine/assets"
-        ))
+        layout.addWidget(QLabel(t("wiz_assets_hint")))
 
         path_row = QHBoxLayout()
         self._path = QLineEdit(self._cfg.assets_dir)
-        self._path.setPlaceholderText("Pfad zum assets/-Ordner")
+        self._path.setPlaceholderText(t("wiz_assets_placeholder"))
         self._path.textChanged.connect(self._validate_path)
-        detect_btn = QPushButton("Auto-Detect")
+        detect_btn = QPushButton(t("btn_autodetect"))
         detect_btn.clicked.connect(self._autodetect)
         browse_btn = QPushButton("…")
         browse_btn.setFixedWidth(30)
@@ -275,10 +266,10 @@ class AssetsPage(QWizardPage):
         if tmp.assets_dir:
             self._path.setText(tmp.assets_dir)
         else:
-            self._status.setText("Nicht gefunden. Bitte Wallpaper Engine in Steam installieren.")
+            self._status.setText(t("wiz_assets_detect_fail"))
 
     def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "Assets-Ordner wählen")
+        path = QFileDialog.getExistingDirectory(self, t("wiz_assets_title"))
         if path:
             self._path.setText(path)
 
@@ -288,13 +279,13 @@ class AssetsPage(QWizardPage):
             self._set_ok(False, "")
             return
         if not p.is_dir():
-            self._set_ok(False, f"✗ Verzeichnis nicht gefunden: {text}")
+            self._set_ok(False, t("wiz_assets_not_dir", p=text))
             return
         missing = [f for f in ("shaders", "materials", "effects") if not (p / f).exists()]
         if missing:
-            self._set_ok(False, f"✗ Kein gültiges Assets-Verzeichnis (fehlt: {', '.join(missing)})")
+            self._set_ok(False, t("wiz_assets_invalid", missing=", ".join(missing)))
             return
-        self._set_ok(True, "✓ Assets-Verzeichnis gefunden")
+        self._set_ok(True, t("wiz_assets_ok"))
 
     def _set_ok(self, ok: bool, msg: str):
         color = "#4caf50" if ok else "#f44336"
@@ -314,8 +305,8 @@ class FinishPage(QWizardPage):
     def __init__(self, cfg: Config):
         super().__init__()
         self._cfg = cfg
-        self.setTitle("Einrichtung abgeschlossen")
-        self.setSubTitle("Konfiguration wird gespeichert")
+        self.setTitle(t("wiz_finish_title"))
+        self.setSubTitle(t("wiz_finish_sub"))
         self._layout  = QVBoxLayout(self)
         self._summary = QLabel()
         self._summary.setWordWrap(True)
@@ -323,13 +314,13 @@ class FinishPage(QWizardPage):
         self._layout.addStretch()
 
     def initializePage(self):
-        lines = ["<b>Konfiguration:</b><br>", f"Modus: {self._cfg.mode}"]
+        lines = [t("wiz_finish_config"), t("wiz_finish_mode", v=self._cfg.mode)]
         if self._cfg.mode in ("distrobox", "toolbox"):
-            lines.append(f"Container: {self._cfg.container}")
+            lines.append(t("wiz_finish_container", v=self._cfg.container))
         lines += [
-            f"Binary: {self._cfg.binary}",
-            f"Assets: {self._cfg.assets_dir}",
-            "<br>Klicke <b>Fertigstellen</b> um die Konfiguration zu speichern.",
+            t("wiz_finish_binary", v=self._cfg.binary),
+            t("wiz_finish_assets", v=self._cfg.assets_dir),
+            t("wiz_finish_done"),
         ]
         self._summary.setText("<br>".join(lines))
 
@@ -340,7 +331,7 @@ class SetupWizard(QWizard):
     def __init__(self, cfg: Config, parent=None):
         super().__init__(parent)
         self.cfg = cfg
-        self.setWindowTitle("Einrichtungs-Assistent")
+        self.setWindowTitle(t("wiz_title"))
         self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage)
         self.resize(720, 520)

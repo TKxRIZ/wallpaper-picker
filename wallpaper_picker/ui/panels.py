@@ -6,12 +6,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Config, validate_setup, lwe_quick_compat_check
+from ..i18n import t
 from ..models import Wallpaper, MonitorConfig
 
 
 class UpdateBanner(QFrame):
     show_dialog = Signal()
-    dismissed   = Signal(str)  # emits the version that was dismissed
+    dismissed   = Signal(str)
 
     def __init__(self, remote_version: str, parent=None):
         super().__init__(parent)
@@ -22,10 +23,10 @@ class UpdateBanner(QFrame):
 
         icon = QLabel("↑")
         icon.setStyleSheet("color:#89b4fa; font-size:16px; font-weight:bold;")
-        msg = QLabel(f"Update verfügbar — Version <b>{remote_version}</b>")
+        msg = QLabel(t("update_available", v=f"<b>{remote_version}</b>"))
         msg.setStyleSheet("color:#cdd6f4;")
 
-        update_btn = QPushButton("Aktualisieren")
+        update_btn = QPushButton(t("btn_update"))
         update_btn.setStyleSheet(
             "background:#89b4fa;color:#1e1e2e;font-weight:bold;border-radius:4px;padding:4px 12px;"
         )
@@ -79,12 +80,12 @@ class SetupBanner(QFrame):
         icon.setStyleSheet("color:#fbbf24; font-size:16px;")
 
         first  = issues[0]
-        suffix = f" (+{len(issues)-1} weitere)" if len(issues) > 1 else ""
+        suffix = t("issues_more", n=len(issues) - 1) if len(issues) > 1 else ""
         msg    = QLabel(f"{first}{suffix}")
         msg.setStyleSheet("color:#fef3c7; font-weight:bold;")
         msg.setToolTip("\n".join(issues))
 
-        wizard_btn = QPushButton("Setup-Assistent öffnen")
+        wizard_btn = QPushButton(t("btn_open_wizard"))
         wizard_btn.setStyleSheet(
             "background:#fbbf24;color:#1c1917;font-weight:bold;border-radius:4px;padding:4px 12px;"
         )
@@ -122,18 +123,18 @@ class ServiceStatusWidget(QWidget):
         s = r.stdout.strip()
         if s == "active":
             self._dot.setStyleSheet("color:#4caf50; font-size:10px;")
-            self._lbl.setText("Service aktiv")
+            self._lbl.setText(t("service_active"))
         elif s == "inactive":
             self._dot.setStyleSheet("color:#888; font-size:10px;")
-            self._lbl.setText("Service inaktiv")
+            self._lbl.setText(t("service_inactive"))
         else:
             self._dot.setStyleSheet("color:#f44336; font-size:10px;")
-            self._lbl.setText(f"Service: {s or 'unbekannt'}")
+            self._lbl.setText(t("service_status", s=s or "?"))
 
 
 class MonitorPanel(QGroupBox):
     def __init__(self, monitors: list[str], configs: list[MonitorConfig], parent=None):
-        super().__init__("Monitor-Zuordnung", parent)
+        super().__init__(t("monitor_group"), parent)
         self._monitors = monitors
         self._configs: dict[str, str] = {mc.name: mc.wallpaper_id for mc in configs}
         self._active   = monitors[0] if monitors else ""
@@ -141,7 +142,7 @@ class MonitorPanel(QGroupBox):
         self._rows: dict[str, tuple[QPushButton, QLabel]] = {}
 
         layout = QVBoxLayout(self)
-        hint = QLabel("Monitor wählen → Wallpaper klicken → Anwenden")
+        hint = QLabel(t("monitor_hint"))
         hint.setStyleSheet("color:#888; font-size:11px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -165,7 +166,7 @@ class MonitorPanel(QGroupBox):
     def _display(self, mon: str) -> str:
         wp_id = self._configs.get(mon, "")
         if not wp_id:
-            return "— kein Wallpaper"
+            return t("monitor_none")
         wp = self._wallpapers.get(wp_id)
         return wp.title if wp else wp_id
 

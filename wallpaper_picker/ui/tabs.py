@@ -1,6 +1,7 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
+from ..i18n import t
 from ..models import Wallpaper
 from ..workers import LocalThumbnailWorker, ThumbnailLoader
 from .cards import WallpaperGrid
@@ -15,11 +16,7 @@ class InstalledTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         if not wallpapers:
-            empty = QLabel(
-                "Keine Wallpapers gefunden.\n\n"
-                "Steam → Wallpaper Engine → Workshop → Wallpapers abonnieren,\n"
-                "dann Steam neu starten damit sie heruntergeladen werden."
-            )
+            empty = QLabel(t("installed_empty"))
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setStyleSheet("color:#888; padding:40px;")
             layout.addWidget(empty)
@@ -40,20 +37,17 @@ class AvailableTab(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
 
-        info = QLabel(
-            "In Steam abonniert, aber noch nicht heruntergeladen.\n"
-            "Steam → Wallpaper Engine → Workshop → Abonnements"
-        )
+        info = QLabel(t("available_info"))
         info.setWordWrap(True)
         info.setStyleSheet("color:#aaa; padding:8px;")
         layout.addWidget(info)
 
         self._progress = QProgressBar()
-        self._progress.setFormat("Metadaten laden… %v / %m")
+        self._progress.setFormat(t("available_loading"))
         layout.addWidget(self._progress)
 
         self.grid = WallpaperGrid()
-        self.grid._search.setPlaceholderText("Suchen… (nach dem Laden)")
+        self.grid._search.setPlaceholderText(t("available_search"))
         layout.addWidget(self.grid)
 
         self._thumb_workers: list[ThumbnailLoader] = []

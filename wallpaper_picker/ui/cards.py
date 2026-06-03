@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import CARD_W, CARD_H, THUMB_W, THUMB_H
+from ..i18n import t
 from ..models import Wallpaper, WallpaperConfig
 
 _CARD_NORMAL = (
@@ -48,7 +49,7 @@ class WallpaperCard(QFrame):
         self.thumb = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.thumb.setFixedHeight(THUMB_H)
         self.thumb.setStyleSheet("background:#11111b; border-radius:5px; color:#585b70; font-size:11px;")
-        self.thumb.setText("lädt…" if self.wallpaper.preview_path else "kein Bild")
+        self.thumb.setText(t("card_loading") if self.wallpaper.preview_path else t("card_no_image"))
         layout.addWidget(self.thumb)
 
         title = QLabel()
@@ -62,10 +63,8 @@ class WallpaperCard(QFrame):
         layout.addWidget(title)
         self.setStyleSheet(_CARD_NORMAL)
 
-        # Config button — positioned absolute in bottom-right of thumbnail
         self._cfg_btn = QPushButton("⚙", self)
         self._cfg_btn.setFixedSize(22, 22)
-        self._cfg_btn.setToolTip("Eigene Konfiguration")
         self._cfg_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._cfg_btn.move(CARD_W - 28, THUMB_H - 18)
         self._cfg_btn.clicked.connect(lambda: self.configure.emit(self.wallpaper.id))
@@ -73,7 +72,7 @@ class WallpaperCard(QFrame):
     def _refresh_cfg_btn(self):
         has_cfg = WallpaperConfig.load(self.wallpaper.id).is_customized()
         self._cfg_btn.setStyleSheet(_CFG_BTN_ACTIVE if has_cfg else _CFG_BTN)
-        self._cfg_btn.setToolTip("Eigene Konfiguration (aktiv)" if has_cfg else "Eigene Konfiguration")
+        self._cfg_btn.setToolTip(t("card_cfg_active") if has_cfg else t("card_cfg_tooltip"))
 
     def set_pixmap(self, pix: QPixmap):
         self.thumb.setPixmap(pix.scaled(
@@ -87,7 +86,6 @@ class WallpaperCard(QFrame):
         self.setStyleSheet(_CARD_SELECTED if on else _CARD_NORMAL)
 
     def mousePressEvent(self, event):
-        # Only emit clicked if not hitting the config button
         if not self._cfg_btn.geometry().contains(event.pos()):
             self.clicked.emit(self.wallpaper.id)
 
@@ -106,7 +104,7 @@ class WallpaperGrid(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        self._search = QLineEdit(placeholderText="Suchen…")
+        self._search = QLineEdit(placeholderText=t("search_placeholder"))
         self._search.textChanged.connect(self._filter)
         outer.addWidget(self._search)
 

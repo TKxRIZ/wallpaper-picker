@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from ..config import Config, validate_setup
 from ..constants import CONFIG_PATH, UPDATE_STATE_PATH
 from ..engine import get_monitors, parse_service, load_installed, load_available_ids
+from ..i18n import t
 from ..models import WallpaperConfig
 from ..workers import ApplyWorker, SteamMetaWorker, UpdateChecker, QThread
 from .panels import SetupBanner, UpdateBanner, ServiceStatusWidget, MonitorPanel
@@ -23,7 +24,7 @@ from .wizard import SetupWizard
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Wallpaper Engine – Linux")
+        self.setWindowTitle(t("app_title"))
         self.resize(1150, 720)
 
         self._cfg          = Config.load()
@@ -50,17 +51,16 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar()
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        title_lbl = QLabel("  Wallpaper Engine – Linux  ")
+        title_lbl = QLabel(f"  {t('app_title')}  ")
         title_lbl.setStyleSheet("font-weight:bold;")
         toolbar.addWidget(title_lbl)
         toolbar.addSeparator()
 
-        wizard_btn = QPushButton("⭐  Einrichtungs-Assistent")
+        wizard_btn = QPushButton(t("btn_wizard"))
         wizard_btn.clicked.connect(self._run_wizard)
-        self._update_check_btn = QPushButton("↑  Updates")
+        self._update_check_btn = QPushButton(t("btn_updates"))
         self._update_check_btn.clicked.connect(self._manual_update_check)
-        self._update_check_btn.setToolTip("Auf Updates prüfen")
-        settings_btn = QPushButton("⚙  Einstellungen")
+        settings_btn = QPushButton(t("btn_settings"))
         settings_btn.clicked.connect(self._open_settings)
         toolbar.addWidget(wizard_btn)
         toolbar.addWidget(self._update_check_btn)
@@ -91,10 +91,10 @@ class MainWindow(QMainWindow):
         if hasattr(self._installed_tab, "grid"):
             self._installed_tab.wallpaper_selected.connect(self._on_wp_selected)
             self._installed_tab.grid.configure.connect(self._open_wp_config)
-        self._tabs.addTab(self._installed_tab, f"Installiert ({len(self._installed)})")
+        self._tabs.addTab(self._installed_tab, t("tab_installed", n=len(self._installed)))
 
         self._available_tab = AvailableTab()
-        self._tabs.addTab(self._available_tab, "Verfügbar (wird geladen…)")
+        self._tabs.addTab(self._available_tab, t("tab_available"))
         self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs, stretch=1)
 
@@ -108,7 +108,7 @@ class MainWindow(QMainWindow):
         self._preview_img.setStyleSheet(
             "background:#11111b; border-radius:8px; color:#45475a; font-size:12px;"
         )
-        self._preview_img.setText("← Wallpaper auswählen")
+        self._preview_img.setText(t("preview_hint"))
         self._preview_img.setWordWrap(True)
         rl.addWidget(self._preview_img)
 
@@ -125,17 +125,17 @@ class MainWindow(QMainWindow):
         self._monitor_panel.register_wallpapers(self._installed)
         rl.addWidget(self._monitor_panel)
 
-        fps_box  = QGroupBox("Wiedergabe")
+        fps_box  = QGroupBox(t("group_playback"))
         fps_form = QFormLayout(fps_box)
         self._fps_spin = QSpinBox()
         self._fps_spin.setRange(1, 120)
         self._fps_spin.setValue(self._cfg.fps)
-        fps_form.addRow("FPS:", self._fps_spin)
+        fps_form.addRow(t("label_fps"), self._fps_spin)
         rl.addWidget(fps_box)
 
         rl.addStretch()
 
-        self._apply_btn = QPushButton("Anwenden")
+        self._apply_btn = QPushButton(t("btn_apply"))
         self._apply_btn.setFixedHeight(42)
         self._apply_btn.clicked.connect(self._apply)
         rl.addWidget(self._apply_btn)
@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, idx: int):
         if idx == 1 and self._meta_worker is None:
             ids = load_available_ids()
-            self._tabs.setTabText(1, f"Verfügbar ({len(ids)})")
+            self._tabs.setTabText(1, t("tab_available_n", n=len(ids)))
             self._available_tab.start_loading(ids)
             self._meta_worker = SteamMetaWorker(ids, self._cfg.steam_api_key)
             self._meta_worker.batch_ready.connect(self._available_tab.on_batch)
@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
         if not wp:
             return
         self._preview_title.setText(wp.title)
-        self._preview_id.setText(f"ID: {wp.id}")
+        self._preview_id.setText(t("label_id", id=wp.id))
         p = wp.preview_path
         if p:
             pix = QPixmap(str(p))
@@ -182,26 +182,25 @@ class MainWindow(QMainWindow):
                 self._preview_img.setPixmap(pix)
                 return
         self._preview_img.clear()
-        self._preview_img.setText("Kein Vorschaubild")
+        self._preview_img.setText(t("preview_no_image"))
 
     def _apply(self):
         issues = validate_setup(self._cfg)
         if issues:
-            QMessageBox.warning(self, "Setup unvollständig",
-                                "Bitte zuerst die Einrichtung abschließen:\n\n• " + "\n• ".join(issues))
+            QMessageBox.warning(self, t("dlg_setup_incomplete"),
+                                t("dlg_setup_incomplete_body", issues="\n• ".join(issues)))
             return
 
         configs = self._monitor_panel.get_configs()
         if not any(mc.wallpaper_id for mc in configs):
-            self._status.showMessage("Kein Wallpaper ausgewählt — bitte Wallpaper anklicken.")
+            self._status.showMessage(t("status_no_wallpaper"))
             return
 
         self._cfg.fps = self._fps_spin.value()
         self._cfg.save()
         self._apply_btn.setEnabled(False)
-        self._status.showMessage("Wird angewendet…")
+        self._status.showMessage(t("status_applying"))
 
-        # Merge per-wallpaper configs for all active monitors
         active_ids = [mc.wallpaper_id for mc in configs if mc.wallpaper_id]
         wp_cfg = WallpaperConfig.merge([WallpaperConfig.load(i) for i in active_ids]) if active_ids else None
 
@@ -253,26 +252,26 @@ class MainWindow(QMainWindow):
 
     def _manual_update_check(self):
         if not self._cfg.update_url:
-            self._status.showMessage("Keine Update-URL konfiguriert — Einstellungen → Updates", 4000)
+            self._status.showMessage(t("status_no_url"), 4000)
             return
         self._update_check_btn.setEnabled(False)
-        self._update_check_btn.setText("↑  Prüfe…")
+        self._update_check_btn.setText(t("btn_checking"))
         checker = UpdateChecker(self._cfg.update_url)
         checker.update_available.connect(self._on_update_available)
-        checker.up_to_date.connect(lambda v: self._on_check_done(f"Bereits aktuell (v{v})"))
-        checker.check_failed.connect(lambda e: self._on_check_done(f"Fehler: {e}"))
+        checker.up_to_date.connect(lambda v: self._on_check_done(t("status_up_to_date", v=v)))
+        checker.check_failed.connect(lambda e: self._on_check_done(t("status_error", e=e)))
         checker.start()
         self._workers.append(checker)
 
     def _on_check_done(self, msg: str):
         self._update_check_btn.setEnabled(True)
-        self._update_check_btn.setText("↑  Updates")
+        self._update_check_btn.setText(t("btn_updates"))
         self._status.showMessage(msg, 5000)
 
     def _on_update_available(self, remote: str, changelog: dict):
         self._pending_update = (remote, changelog)
         self._update_check_btn.setEnabled(True)
-        self._update_check_btn.setText("↑  Updates")
+        self._update_check_btn.setText(t("btn_updates"))
         self._update_check_btn.setStyleSheet(
             "background:#1e3a5f;border:1px solid #89b4fa;border-radius:5px;padding:4px 10px;"
         )
@@ -312,7 +311,7 @@ class MainWindow(QMainWindow):
     def _on_setup_complete(self):
         self._fps_spin.setValue(self._cfg.fps)
         self._setup_banner.update_cfg(self._cfg)
-        self._status.showMessage("Konfiguration gespeichert.")
+        self._status.showMessage(t("status_config_saved"))
 
     def closeEvent(self, event):
         for w in self._workers:

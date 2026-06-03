@@ -22,6 +22,7 @@ class Config:
     last_update_check: float = 0.0
     dismissed_update: str    = ""
     project_dir: str         = str(PROJECT_DIR)
+    language: str            = "de"
     fullscreen_pause: bool   = True
     disable_particles: bool  = False
     disable_mouse: bool      = False

@@ -35,15 +35,19 @@ class ApplyWorker(QThread):
                 ["systemctl", "--user", "restart", self.cfg.service_name],
                 check=True, timeout=30,
             )
-            self.done.emit(True, "Wallpaper angewendet.")
+            from .i18n import t
+            self.done.emit(True, t("worker_apply_ok"))
         except ValueError as e:
             self.done.emit(False, str(e))
         except subprocess.TimeoutExpired:
-            self.done.emit(False, "Timeout — Service antwortet nicht.")
+            from .i18n import t
+            self.done.emit(False, t("worker_timeout"))
         except subprocess.CalledProcessError as e:
-            self.done.emit(False, f"systemctl Fehler: {e}")
+            from .i18n import t
+            self.done.emit(False, t("worker_systemctl_err", e=e))
         except Exception as e:
-            self.done.emit(False, f"Fehler: {e}")
+            from .i18n import t
+            self.done.emit(False, t("worker_err", e=e))
 
 
 class ServiceControlWorker(QThread):
@@ -227,28 +231,25 @@ class AppUpdateWorker(QThread):
             return False
 
     def run(self):
+        from .i18n import t
         self.output_line.emit(f"Repo: {PROJECT_DIR}")
 
-        # Fetch remote state
         if not self._run_step("git fetch origin", ["git", "-C", str(PROJECT_DIR), "fetch", "origin"]):
-            self.done.emit(False, "Fetch fehlgeschlagen — Internetverbindung prüfen.")
+            self.done.emit(False, t("worker_fetch_fail"))
             return
 
-        # Hard reset to origin/main — reliable regardless of local state
         if not self._run_step(
             "git reset --hard origin/main",
             ["git", "-C", str(PROJECT_DIR), "reset", "--hard", "origin/main"],
         ):
-            self.done.emit(False, "Reset fehlgeschlagen.")
+            self.done.emit(False, t("worker_reset_fail"))
             return
 
-        # Re-run install.sh to update launcher + desktop files + tray binary
         install_sh = PROJECT_DIR / "install.sh"
         if install_sh.exists():
-            self._run_step("install.sh (Launcher + Tray aktualisieren)",
-                           ["bash", str(install_sh)])
+            self._run_step("install.sh", ["bash", str(install_sh)])
 
-        self.done.emit(True, "Update erfolgreich — App wird neu gestartet.")
+        self.done.emit(True, t("worker_update_ok"))
 
 
 class UpdateChecker(QThread):
